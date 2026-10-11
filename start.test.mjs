@@ -53,11 +53,15 @@ const start = (site) => {
 }
 
 // send makes a request as @ai-sdk/anthropic does, to the URL it was made for
-async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messages", asRequest = false } = {}) {
+// place is what magpie tells the fetch of where the agent works, as its
+// headers: {dir, git}
+async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messages", asRequest = false, place = {} } = {}) {
   routeToFake()
   const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
   const opts = await hooks.auth.loader(async () => auth, { id: "zcode" })
   const headers = { "content-type": "application/json", "x-api-key": "zcode", "anthropic-version": "2023-06-01", "user-agent": "ai-sdk/anthropic/3.0.81" }
+  if (place.dir !== undefined) headers["x-magpie-work-dir"] = place.dir
+  if (place.git !== undefined) headers["x-magpie-work-git"] = place.git
   const res = asRequest
     ? await opts.fetch(new Request(url, { method: "POST", headers, body }))
     : await opts.fetch(url, { method: "POST", headers, body })
@@ -72,28 +76,27 @@ const own = (headers) => Object.fromEntries(Object.entries(headers).filter(([k])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 const osVersion = `${process.platform} ${release()} ${arch()}`
-const shell = process.env.SHELL || process.env.ComSpec ? basename(process.env.SHELL || process.env.ComSpec) : "unknown"
 const day = (() => {
   const d = new Date()
   const p = (n) => String(n).padStart(2, "0")
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 })()
-const environment = (powered) =>
+// the environment section: the agent's folder and git repository only as
+// magpie told them (where), never the plugin's own process.cwd() (#86)
+const environment = (powered, where = []) =>
   [
     "# Environment",
     "You have been invoked in the following environment:",
-    "- Primary working directory: " + process.cwd(),
-    "- Is a git repository: no",
+    ...where,
     "- Platform: " + process.platform,
-    "- Shell: " + shell,
     "- OS Version: " + osVersion,
     ...(powered ? [`- You are powered by the model named ${powered}.`] : []),
   ].join("\n")
 const eph = { type: "ephemeral" }
-const zcodeSystem = (powered) => [
+const zcodeSystem = (powered, where) => [
   { type: "text", text: PROMPT.cliPrefix, cache_control: eph },
   { type: "text", text: PROMPT.stableSections.join("\n\n"), cache_control: eph },
-  { type: "text", text: "\n\n" + [PROMPT.beforeEnvironment, environment(powered), PROMPT.afterEnvironment].join("\n\n"), cache_control: eph },
+  { type: "text", text: "\n\n" + [PROMPT.beforeEnvironment, environment(powered, where), PROMPT.afterEnvironment].join("\n\n"), cache_control: eph },
 ]
 const reminder = {
   role: "user",
@@ -238,6 +241,48 @@ test("a Start Plan request made as a Request, its body a stream, is dressed too"
   expect(r.headers["x-title"]).toBe("Z Code@cli")
   expect(JSON.parse(r.body).system.slice(0, 3)).toEqual(zcodeSystem("zai-api/GLM-5.3-Flash"))
   expect(Number(r.headers["content-length"])).toBe(Buffer.byteLength(r.body))
+})
+
+// #86 (Hipple): the plugin runs in magpie, so its process.cwd() is
+// magpie's folder (C:\\Users\\<user>\\.config\\magpie), which the section
+// said as the working directory, with "Is a git repository: no" whatever
+// the folder, and magpie's shell. The folder and the repository are the
+// agent's as magpie tells them, percent-encoded, and go to no vendor;
+// what isn't told isn't said.
+test("a Start Plan request says the agent's folder as magpie tells it, and no folder when not told (#86)", async () => {
+  const dir = "C:\\Users\\me\\My Proj 中文 & <x>"
+  let r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent(dir), git: "yes" } })
+  expect(JSON.parse(r.body).system.slice(0, 3)).toEqual(
+    zcodeSystem("zai-api/GLM-5.3-Flash", ["- Primary working directory: " + dir, "- Is a git repository: yes"]),
+  )
+  expect(r.headers["x-magpie-work-dir"]).toBeUndefined()
+  expect(r.headers["x-magpie-work-git"]).toBeUndefined()
+  got.length = 0
+  r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent("/Users/me/notes"), git: "no" } })
+  expect(JSON.parse(r.body).system[2].text).toContain("- Primary working directory: /Users/me/notes\n- Is a git repository: no\n- Platform: ")
+  got.length = 0
+  // a folder whose repository magpie doesn't know: no git line
+  r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent("/srv/x") } })
+  expect(JSON.parse(r.body).system[2].text).toContain("- Primary working directory: /srv/x\n- Platform: ")
+  got.length = 0
+  // nothing told (an older magpie, an agent that says no folder): neither
+  // line, and never the plugin's own folder or shell
+  r = await send(start("zai"), JSON.stringify(agentBody), { place: { git: "yes" } })
+  const text = JSON.parse(r.body).system[2].text
+  expect(JSON.parse(r.body).system.slice(0, 3)).toEqual(zcodeSystem("zai-api/GLM-5.3-Flash"))
+  expect(text).not.toContain("Primary working directory")
+  expect(text).not.toContain("Is a git repository")
+  expect(text).not.toContain("- Shell:")
+  expect(r.body).not.toContain(JSON.stringify(process.cwd()).slice(1, -1))
+  expect(r.headers["x-magpie-work-git"]).toBeUndefined()
+})
+
+test("magpie's word on the folder goes to no vendor on a Coding Plan request either", async () => {
+  sentAsIs(
+    await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, agentText, { place: { dir: "%2Fx", git: "no" } }),
+    "one.secret",
+    "/api.z.ai/api/anthropic/v1/messages",
+  )
 })
 
 // the GLM Coding Plan and team seats: as the agent sent it, as 0.1.6 sent it
