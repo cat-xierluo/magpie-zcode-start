@@ -1044,7 +1044,7 @@ function ownSignIn() {
 function asZCode() {
   return {
     url: "",
-    instructions: "Uses the account the ZCode app is signed in to, and follows it.",
+    instructions: "Uses the account the ZCode app is signed in to, and follows it while ZCode stays signed in to that account.",
     method: "auto",
     async callback() {
       const own = ownSignIn()
@@ -1064,10 +1064,13 @@ function stateOf(auth) {
       s = JSON.parse(auth.refresh)
     } catch {}
     if (s.source === "zcode") {
-      // ZCode's own, read now: what it was when this was signed in, if
-      // ZCode has since signed out
+      // ZCode's own, read now, while ZCode is signed in to this same
+      // account. Signed out, or signed in to another account since, it is
+      // what it was when this was signed in: another account's key would
+      // send this account's requests as that one, and an expired session
+      // says sign in again (EXPIRED) rather than borrowing another's.
       const own = ownSignIn()
-      if (own) {
+      if (own && own.user === String(auth.accountId ?? "")) {
         const { user, ...now } = own
         s = { source: "zcode", device: s.device, plan: s.plan, ...now }
       }
