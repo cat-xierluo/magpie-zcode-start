@@ -19,7 +19,7 @@
 import { createDecipheriv, createHash } from "node:crypto"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { arch, homedir, release, userInfo } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import PROMPT from "./prompt.mjs"
 
 const PROVIDER = "zcode"
@@ -933,8 +933,28 @@ async function authorize(site, log) {
 // team's plan. An account signed in "as ZCode" reads them for every
 // request, so it follows ZCode's own sign-in, its renewed session and its
 // switches between plans, as magpie's built-in did (zcode.go zcodeOwn).
+//
+// ZCode 3.14 can move its data (数据存储路径, "data storage path"): it copies
+// ~/.zcode/v2 to <folder>/.zcode/v2, all but setting.json, and from its next
+// start reads credentials.json and runtime/provider from there. The choice
+// stays in the home folder's setting.json as dataBaseDir, which ZCode's main
+// process reads before anything else (readBootstrapDataBaseDirFromDisk);
+// setting.json itself, and the team plan it names, stay in the home folder.
 
-const zcodeDir = () => join(homedir(), ".zcode", "v2")
+// settingDir is where ZCode keeps setting.json, moved or not.
+const settingDir = () => join(homedir(), ".zcode", "v2")
+
+// dataIn is the folder ZCode keeps its .zcode data in: the home folder,
+// unless dataBaseDir moved it. A value that isn't an absolute path is
+// ignored, as magpie's built-in does (internal/appdir ZCodeDataIn).
+function dataIn() {
+  const d = readJSON(join(settingDir(), "setting.json"))?.dataBaseDir
+  const t = typeof d === "string" ? d.trim() : ""
+  return t && isAbsolute(t) ? t : homedir()
+}
+
+// zcodeDir is where ZCode keeps credentials.json and runtime/provider.
+const zcodeDir = () => join(dataIn(), ".zcode", "v2")
 
 // secret is the key ZCode encrypts its credentials with.
 function secret() {
@@ -974,7 +994,7 @@ function readJSON(path) {
 
 // ownTeam is the team plan ZCode switched to, when it did.
 function ownTeam(store, key) {
-  const set = readJSON(join(zcodeDir(), "setting.json"))
+  const set = readJSON(join(settingDir(), "setting.json"))
   if (!set) return null
   const families = set.providerFamilyDomain === "zai" || set.providerFamilyDomain === "bigmodel" ? [set.providerFamilyDomain] : ["zai", "bigmodel"]
   for (const fam of families) {
@@ -1139,7 +1159,7 @@ function modelsOf(cfg, plan) {
 // localConfig is the latest provider config an installed ZCode has.
 function localConfig() {
   const files = []
-  const rt = join(homedir(), ".zcode", "v2", "runtime", "provider")
+  const rt = join(zcodeDir(), "runtime", "provider")
   const walk = (dir, depth) => {
     let es = []
     try {
