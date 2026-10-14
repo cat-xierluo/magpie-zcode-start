@@ -140,3 +140,32 @@ test("an app sign-in for A whose saved session has lapsed, with ZCode on B, says
   expect(err?.message).toContain("sign in")
   expect(sent.join("")).not.toContain("jB-live")
 })
+
+// ZCode 3.15 keeps no coding plan key in its credentials: a BigModel GLM
+// Coding Pro's key sits in config.json, the built-in coding plan
+// provider's options.apiKey (yetone/magpie#2130)
+test("ZCode 3.15's plan key is read from its config.json", async () => {
+  const bm = JSON.stringify({ email: "bm@example.com" })
+  zcodeHas({ zcodejwttoken: "Bearer j1", "oauth:bigmodel:user_info": bm, "oauth:bigmodel:access_token": "tok" })
+  const config = (provider) => writeFileSync(join(dir(), "config.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json", provider }))
+  config({
+    "builtin:bigmodel-coding-plan": { name: "GLM Coding Plan", options: { apiKey: "bm.secret", baseURL: "https://open.bigmodel.cn/api/anthropic" }, models: {} },
+    "builtin:zai-coding-plan": { options: { apiKey: "" } },
+  })
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.type).toBe("success")
+  expect(got.access).toBe("bm.secret")
+  const auth = { ...got, type: "oauth" }
+  expect(_internal.stateOf(auth)).toMatchObject({ key: "bm.secret", jwt: "j1", base: "https://open.bigmodel.cn/api/anthropic", site: "bigmodel" })
+
+  // one written encrypted reads too; one that isn't a key doesn't
+  config({ "builtin:zai-coding-plan": { options: { apiKey: "{env:ZAI_KEY}" } }, "builtin:bigmodel-coding-plan": { options: { apiKey: enc("bm.secret2") } } })
+  expect(_internal.stateOf(auth)).toMatchObject({ key: "bm.secret2", base: "https://open.bigmodel.cn/api/anthropic" })
+
+  // a key in credentials.json still comes first
+  zcodeHas({ [KEY]: "id1.secret1", zcodejwttoken: "j1", "oauth:bigmodel:user_info": bm })
+  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", base: "https://api.z.ai/api/anthropic" })
+  config({})
+})

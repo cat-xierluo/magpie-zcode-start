@@ -1026,6 +1026,27 @@ function ownTeam(store, key) {
   return null
 }
 
+// configKey is the coding plan key ZCode's config.json gives its built-in
+// coding plan provider, Z.ai's first, as ZCode lists them; ZCode reads it
+// as it is, and one written encrypted is read too.
+function configKey(key) {
+  const providers = readJSON(join(zcodeDir(), "config.json"))?.provider
+  if (!providers || typeof providers !== "object") return null
+  for (const [ids, base] of [
+    [["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], ZAI_BASE],
+    [["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], BIGMODEL_BASE],
+  ]) {
+    for (const id of ids) {
+      let k = providers[id]?.options?.apiKey
+      if (typeof k !== "string") continue
+      k = k.trim()
+      if (k.startsWith("enc:")) k = first(decrypt(key, k))
+      if (k.includes(".") && !/[\s{$]/.test(k)) return { key: k, base }
+    }
+  }
+  return null
+}
+
 // ownSignIn is what ZCode is signed in to now: the account, its coding
 // plan key, ZCode's session token (the Start Plan's key) and the team plan
 // it is switched to; null when it has none of them.
@@ -1043,6 +1064,9 @@ function ownSignIn() {
     // Z.ai's first, as ZCode lists it
     if (!s.key || (base === ZAI_BASE && s.base !== ZAI_BASE)) s = { key: k, base }
   }
+  // ZCode 3.15 keeps no plan key in its credentials; the one it uses sits
+  // in config.json, the provider's options.apiKey (yetone/magpie#2130)
+  if (!s.key) s = configKey(key) || s
   const jwt = first(first(decrypt(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
   const team = ownTeam(store, key)
   if (team) s = { ...team, jwt }
