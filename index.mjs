@@ -436,9 +436,12 @@ async function codingUsage(s) {
   const level = typeof d.level === "string" ? d.level : ""
   if (level) out.plan = "GLM Coding " + level[0].toUpperCase() + level.slice(1)
   out.windows = limitWindows(d)
+  const resets = personalResets(root, s.key)
   try {
     Object.assign(out, termOf(await call("GET", root + "/api/biz/subscription/list", { auth: s.key })))
   } catch {}
+  const r = await resets
+  if (r) out.resets = r
   return out
 }
 
@@ -708,31 +711,56 @@ async function teamUsage(s, key) {
 }
 
 // teamResets is how many resets a team member may spend, of the five hours
-// and of the week: those of customer-package-reset/list still available.
-// null when it can't be told or there are none.
+// and of the week, marked a team's (team: true), as the built-in's
+// zhipuTeamResets did. null when it can't be told or there are none.
 async function teamResets(root, auth, headers) {
+  const r = await resetsOf(root + "/api/biz/customer-package-reset/list?targetType=TEAM", auth, headers)
+  if (r) r.team = true
+  return r
+}
+
+// personalResets is how many resets a GLM Coding Plan of a person's own
+// holds, as bigmodel.cn's usage page lists them, asked with the plan's
+// key (the built-in's zhipuPersonalResets). Only read: a reset is spent
+// on the vendor's own page, never from here.
+async function personalResets(root, key) {
+  return resetsOf(root + "/api/biz/customer-package-reset/list?targetType=PERSONAL", key)
+}
+
+// resetsOf reads customer-package-reset/list: the resets of the five
+// hours and of the week, of which only those still available count (one
+// run out stays listed a week, available false), each with its own end
+// (each, soonest first, one with no end last) and the soonest as until.
+// null when the list can't be read, so no count is shown rather than 0,
+// and when it holds none.
+async function resetsOf(url, auth, headers) {
   let d
   try {
-    d = (await call("GET", root + "/api/biz/customer-package-reset/list?targetType=TEAM", { auth, headers })) ?? {}
+    d = (await call("GET", url, { auth, headers })) ?? {}
   } catch {
     return null
   }
   let until = 0
-  const count = (rs) => {
+  const each = []
+  const count = (rs, window) => {
     let n = 0
     for (const x of Array.isArray(rs) ? rs : []) {
       if (x?.available !== true) continue
       n++
       const t = when(x.expireTime)
       if (t && (!until || t < until)) until = t
+      each.push(t ? { until: new Date(t).toISOString(), window } : { window })
     }
     return n
   }
-  const fiveHour = count(d.fiveHourResets)
-  const weekly = count(d.weekResets)
+  const fiveHour = count(d.fiveHourResets, "fiveHour")
+  const weekly = count(d.weekResets, "weekly")
   if (fiveHour + weekly === 0) return null
+  const end = (c) => (c.until ? Date.parse(c.until) : Infinity)
+  each.sort((a, b) => (end(a) === end(b) ? 0 : end(a) < end(b) ? -1 : 1))
   const r = { count: fiveHour + weekly, byWindow: true, fiveHour, weekly }
   if (until) r.until = new Date(until).toISOString()
+  r.each = each
   return r
 }
 
@@ -1311,6 +1339,36 @@ function model(m, url) {
 // the plan serves (ARNO's "Freeflow", provider zcode-start) sends it: its
 // headers (startHeaders) and its body (dress). The texts are prompt.mjs.
 
+// START_BLOCKED is what the Start Plan still turning a request away means,
+// word for word magpie's provider.ZCodeStartBlockedHint (#425), which
+// magpie's Routing page knows and says in the user's language. It is put
+// in place of the block page, whose words magpie would otherwise read as a
+// network firewall's (provider.BlockedHint).
+const START_BLOCKED = "ZCode's Start Plan still turned this request away, though magpie sends it as the ZCode app does; it can be a network block of this IP, or ZCode checking for something new. Use an account with a GLM Coding Plan, or add another provider to this group"
+const EDGE_BLOCKED = /request has been blocked|errors\.aliyun\.com/i
+const START_REFUSED = /unusual activity|"code"\s*:\s*"?3012\b/i
+
+// startRefused says a Start Plan answer is that refusal, as the built-in's
+// zcodeStartExplain read it: a 405, a block page or code 3012.
+const startRefused = (status, text) => status >= 400 && (status === 405 || EDGE_BLOCKED.test(text) || START_REFUSED.test(text))
+
+// startBlocked is the refusal's answer as the built-in passed it on: what
+// the vendor said (its status for a block page), then START_BLOCKED.
+function startBlocked(res, text) {
+  let said = ""
+  if (!EDGE_BLOCKED.test(text)) {
+    try {
+      const v = JSON.parse(text)
+      said = first(v?.error?.message, typeof v?.error === "string" ? v.error : "", v?.message, v?.msg)
+    } catch {}
+  }
+  said ||= `${res.status} ${STATUS_TEXT[res.status] ?? res.statusText}`.trim()
+  const h = new Headers(res.headers)
+  h.set("content-type", "application/json")
+  const error = { type: "permission_error", message: `${said} — ${START_BLOCKED}` }
+  return new Response(JSON.stringify({ type: "error", error }), { status: res.status, statusText: res.statusText, headers: h })
+}
+
 const osVersion = () => `${process.platform} ${release()} ${arch()}`
 const osCategory = () => (process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux")
 
@@ -1594,6 +1652,13 @@ export async function ZCodeAuthPlugin({ client }) {
               h.set("Authorization", "Bearer " + key)
             }
             let res = await fetch(url, { ...opts, headers: h })
+            // the Start Plan turning the request away says what to do about
+            // it, as the built-in's zcodeStartExplain did
+            if (start && res.status >= 400) {
+              const text = await res.text()
+              if (startRefused(res.status, text)) return kept(startBlocked(res, text))
+              res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+            }
             // a trial entry's gift answer that can't serve the request is
             // the agent's answer, not the coding plan's: the user picked the
             // gift, so a spent bucket says 429 (its quota error inside a 200

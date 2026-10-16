@@ -14,6 +14,7 @@ import { realpathSync } from "node:fs"
 let ZCodeAuthPlugin, PROMPT
 let server
 const got = []
+let answer = null // what the fake answers instead, when set
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
   ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
@@ -22,6 +23,7 @@ beforeAll(async () => {
     port: 0,
     async fetch(req) {
       got.push({ method: req.method, path: new URL(req.url).pathname, headers: Object.fromEntries(req.headers), body: await req.text() })
+      if (answer) return answer()
       return Response.json({ type: "message", content: [] })
     },
   })
@@ -42,6 +44,7 @@ function routeToFake() {
 afterEach(() => {
   globalThis.fetch = real
   got.length = 0
+  answer = null
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -309,4 +312,40 @@ test("a team seat's request goes as the agent sent it, ZCode's token or not", as
   const s = { site: "zai", base: "https://api.z.ai/api/anthropic", key: "team.secret", token: "tok", org: "o1", project: "p1", jwt, device: DEVICE }
   const auth = { type: "oauth", access: s.key, refresh: JSON.stringify(s), expires: 0 }
   sentAsIs(await send(auth, agentText), "team.secret", "/api.z.ai/api/anthropic/v1/messages")
+})
+
+// magpie's provider.ZCodeStartBlockedHint, word for word
+const START_BLOCKED = "ZCode's Start Plan still turned this request away, though magpie sends it as the ZCode app does; it can be a network block of this IP, or ZCode checking for something new. Use an account with a GLM Coding Plan, or add another provider to this group"
+
+test("the Start Plan turning a request away says what to do about it, as the built-in's zcodeStartExplain did (#425)", async () => {
+  const ask = async (auth, url = "https://api.z.ai/api/anthropic/v1/messages") => {
+    routeToFake()
+    const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const opts = await hooks.auth.loader(async () => auth, { id: "zcode" })
+    const res = await opts.fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText })
+    return { status: res.status, text: await res.text(), signIn: res.headers.get("x-magpie-sign-in") }
+  }
+  // the block page zcode.z.ai serves: its status, then the hint, and none
+  // of the page's words, which magpie would read as a firewall's
+  answer = () => new Response("<html>Sorry, your request has been blocked due to unusual activity.</html>", { status: 405, headers: { "content-type": "text/html" } })
+  let r = await ask(start("zai"))
+  expect(r.status).toBe(405)
+  expect(JSON.parse(r.text)).toEqual({ type: "error", error: { type: "permission_error", message: "405 Method Not Allowed — " + START_BLOCKED } })
+  expect(r.text).not.toMatch(/request has been blocked/)
+  expect(r.signIn).toBe("kept")
+  // code 3012 in JSON: the vendor's own words, then the hint
+  answer = () => Response.json({ code: 3012, msg: "method not allowed" }, { status: 403 })
+  r = await ask(start("zai"))
+  expect(r.status).toBe(403)
+  expect(JSON.parse(r.text).error.message).toBe("method not allowed — " + START_BLOCKED)
+  // any other refusal of the Start Plan goes on as it came
+  answer = () => Response.json({ type: "error", error: { type: "overloaded_error", message: "busy" } }, { status: 529 })
+  r = await ask(start("zai"))
+  expect(r.status).toBe(529)
+  expect(JSON.parse(r.text).error.message).toBe("busy")
+  // a GLM Coding Plan's 405 is not the Start Plan's, and says nothing of it
+  answer = () => new Response("request has been blocked", { status: 405 })
+  r = await ask({ type: "api", key: "one.secret", metadata: { site: "zai" } })
+  expect(r.status).toBe(405)
+  expect(r.text).toBe("request has been blocked")
 })

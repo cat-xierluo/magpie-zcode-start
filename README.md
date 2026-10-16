@@ -24,7 +24,12 @@ over Anthropic's Messages API. Provider id: `zcode`.
     ZCode's does: ZCode's headers, ZCode's system prompt ahead of the
     agent's, the day in a `<system-reminder>` turn before the agent's
     turns, and the sign-in's device id in `metadata.user_id`. GLM Coding
-    Plan and team requests go as the agent sent them.
+    Plan and team requests go as the agent sent them. One it still turns
+    away (a 405, the block page or code 3012) comes back with what to do
+    about it, as magpie's built-in said: "ZCode's Start Plan still turned
+    this request away, though magpie sends it as the ZCode app does; …
+    Use an account with a GLM Coding Plan, or add another provider to this
+    group".
   - The Start Plan's token can't be refreshed. When it runs out, sign in
     again.
 - **ZCode app's sign-in**
@@ -95,6 +100,15 @@ that fails leaves just the coding card — magpie hides a card's windows
 behind an error, so a gift hiccup must not black out a working Coding
 Plan. A gift that goes out of date while requests use it simply stops
 showing.
+
+**Resets.** A GLM Coding Plan of the account's own, and a team seat,
+show the resets the vendor's usage page lists
+(`/api/biz/customer-package-reset/list`, `targetType=PERSONAL` with the
+plan's key, `TEAM` with the team's sign-in): how many of the five hours
+and of the week are still available, and when each runs out, soonest
+first. A team's are marked a team's. They are only read; a reset is
+spent on the vendor's own page. A list that can't be read, or has none
+left, shows no count.
 
 **Gift plans ZCode holds but has not granted.** ZCode hands out one-off
 trust-build / gift plans (a day's ZCode Trust Build, say) that are not

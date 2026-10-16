@@ -183,6 +183,57 @@ test("ZCode's Start Plan: its buckets, each for its models", async () => {
   expect(await usage(oauth({ site: "zai", jwt: jwt(now - 60) }))).toEqual({ signIn: "kept", error: "ZCode's sign-in has expired; sign in to ZCode again (or add the account again in magpie)" })
 })
 
+// customer-package-reset/list?targetType=PERSONAL as the reporter of
+// yetone/magpie#1191 captured it on bigmodel.cn (the built-in's
+// zhipu_resets_test.go zhipuResetList): one run out stays listed.
+const PERSONAL_RESETS = {
+  code: 200, msg: "操作成功", success: true,
+  data: {
+    customerId: 0, targetType: "PERSONAL", organizationId: null, projectId: null,
+    lastFiveHourResetTime: "2026-10-06 21:14:03", lastWeekResetTime: null,
+    fiveHourResets: [{ recordId: 0, grantType: "DIRECT", expireTime: "2026-11-02 23:59:59", available: true }],
+    weekResets: [
+      { recordId: 0, grantType: "DIRECT", expireTime: "2026-10-30 23:59:59", available: true },
+      { recordId: 0, grantType: "DIRECT", expireTime: "2026-10-04 23:59:59", available: false },
+    ],
+  },
+}
+
+test("a Coding Plan of a person's own shows its resets, each with its end, as the built-in's zhipuPersonalResets did", async () => {
+  let list = PERSONAL_RESETS
+  const calls = serve(({ url, headers }) => {
+    if (headers.Authorization !== "glm-key") return new Response("", { status: 401 })
+    if (url.pathname === "/api/biz/subscription/list") return ok([])
+    if (url.pathname === "/api/monitor/usage/quota/limit") return ok({ level: "pro", limits: [] })
+    if (url.pathname === "/api/biz/customer-package-reset/list" && url.searchParams.get("targetType") === "PERSONAL")
+      return typeof list === "number" ? new Response("", { status: list }) : new Response(JSON.stringify(list))
+  })
+  const auth = oauth({ site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic", key: "glm-key" })
+  expect(await usage(auth)).toEqual({
+    signIn: "kept",
+    plan: "GLM Coding Pro",
+    windows: [],
+    resets: { count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2026-10-30T15:59:59.000Z", each: [
+      { until: "2026-10-30T15:59:59.000Z", window: "weekly" },
+      { until: "2026-11-02T15:59:59.000Z", window: "fiveHour" },
+    ] },
+  })
+  const asked = calls.find((c) => c.url.pathname === "/api/biz/customer-package-reset/list")
+  expect(asked.url.origin).toBe("https://open.bigmodel.cn")
+  expect(asked.method).toBe("GET")
+  // a list that can't be read shows no count, never 0; nor does one with none left
+  list = 500
+  expect((await usage(auth)).resets).toBeUndefined()
+  list = { code: 200, data: { fiveHourResets: [], weekResets: [{ available: false, expireTime: "2026-10-04 23:59:59" }] } }
+  expect((await usage(auth)).resets).toBeUndefined()
+  // one with no end is listed last, with none
+  list = { code: 200, data: { fiveHourResets: [{ available: true }], weekResets: [{ available: true, expireTime: "2026-10-30 23:59:59" }] } }
+  expect((await usage(auth)).resets).toEqual({ count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2026-10-30T15:59:59.000Z", each: [
+    { until: "2026-10-30T15:59:59.000Z", window: "weekly" },
+    { window: "fiveHour" },
+  ] })
+})
+
 test("a team seat: the team plan's windows, name, end and resets, its key found and saved", async () => {
   const reset = Date.now() + 2 * 3600_000
   let made = null
@@ -219,7 +270,13 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
   expect(await usage(oauth(state), sets)).toEqual({
     signIn: "kept",
     plan: "GLM Coding Team Pro", until: "2026-12-31T15:59:59.000Z", renew: "off",
-    resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1790000000 * 1000).toISOString() },
+    // a team's resets say so, and each its own end, soonest first, as the
+    // built-in's zhipuTeamResets did
+    resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1790000000 * 1000).toISOString(), team: true, each: [
+      { until: new Date(1790000000 * 1000).toISOString(), window: "fiveHour" },
+      { until: "2026-11-30T15:59:59.000Z", window: "fiveHour" },
+      { until: "2026-12-31T15:59:59.000Z", window: "weekly" },
+    ] },
     windows: [
       { name: "5 hours", used: 42, display: "420 / 1000", amount: 420, limit: 1000, resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
       { name: "Weekly", used: 10, display: "1000 / 10000", amount: 1000, limit: 10000, resetsAt: new Date(reset + 86400000).toISOString(), span: 7 * 86400 },
