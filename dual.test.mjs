@@ -373,9 +373,10 @@ test("every live plan spends first by its buckets' models, and the card shows th
   const before = sent.length
   expect((await sendTo(MSG, body("GLM-4"))).status).toBe(200)
   expect(sent.slice(before).at(-1).origin).toBe("https://api.z.ai")
-  // the card shows both plans' live buckets, spent ones included, none of the ended plan's
+  // the card shows both plans' live buckets, spent ones included, none of the
+  // ended plan's, each named after its plan as there are two
   const u = await (await hooks()).usage(async () => coding, { id: "zcode" })
-  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "Trust Build", "GLM-5.2-Trial", "GLM-5.2 late"])
+  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "Start Plan · Trust Build", "GLM Festival Grant · GLM-5.2-Trial", "GLM Festival Grant · GLM-5.2 late"])
   expect(u.windows.some((w) => w.name === "Old")).toBe(false)
   expect(u.windows[0].notModels).toEqual(["glm-5.3-flash-trial", "glm-5.2-trial"])
   expect(u.windows.at(-1).aside).toBe(true) // a spent sibling cannot cap a live bucket

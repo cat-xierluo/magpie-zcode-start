@@ -578,13 +578,16 @@ async function claimHint(s) {
 
 // startUsage is a gift-only account's card: its buckets, or the words
 // for having none to show. The card's header already names the plan, so
-// the windows keep their own names.
+// the windows of one plan keep their own names; with several plans each
+// bucket is named after its plan (see byPlan).
 const NO_START = "this account has no GLM Coding Plan, and ZCode's Start Plan has ended or was never started"
 async function startUsage(s) {
   const g = await giftOf(s)
   if (!g) return { error: NO_START }
   const best = bestBuckets(g.windows)
-  g.windows = g.windows.map(({ _plan, _spent, ...w }, i) => {
+  const label = byPlan(g.windows)
+  g.windows = countedFirst(g.windows.map(({ _plan, _spent, ...w }, i) => {
+    w.name = label(w.name, _plan)
     if (!w.models?.length) return w
     // a model two plans give (Trust Build's and the Start Plan's Flash)
     // counts on the bucket ZCode spends now; the other stays on the card
@@ -595,9 +598,27 @@ async function startUsage(s) {
       return { ...w, aside: true }
     }
     return { ...w, models: [...models, ...models.map(giftID)] }
-  })
+  }))
   return g
 }
+
+// byPlan names a bucket after its plan ("ZCode 1024 Dev Day · GLM-5.3")
+// when the gift's buckets come from more than one plan: two plans each
+// give a GLM-5.3, and named alike a spent one and a live one can't be
+// told apart (01huadalang, Discord: the new-user plan's spent GLM-5.3
+// showed, the 1024 plan's own GLM-5.3 didn't). One plan's buckets keep
+// their own names, as the card's header names the plan.
+function byPlan(windows) {
+  const several = new Set(windows.map((w) => w._plan || "")).size > 1
+  return (name, plan) => (several && plan ? plan + " · " + name : name)
+}
+
+// countedFirst puts the buckets a request spends before those set aside
+// (a spent bucket another plan's live one stands in for), each group in
+// the balance's order: magpie's account row shows a card's first two
+// windows and leaves the rest to its tooltip, so a spent plan listed first
+// hid the live plan's allowance for the same model.
+const countedFirst = (ws) => [...ws.filter((w) => !w.aside), ...ws.filter((w) => w.aside)]
 
 // bestBuckets is, for each model the gift's buckets serve, the index of
 // the one a request spends: a live one before a spent one, the least
@@ -641,19 +662,21 @@ async function dualUsage(s) {
       if (notModels.length) out.windows = out.windows.map((w) => w.aside ? w : { ...w, notModels })
       // Several buckets may serve one model: one spent sibling cannot block it.
       const best = bestBuckets(g.windows)
-      out.windows.push(...g.windows.map(({ _plan: p, _spent, ...w }, i) => {
+      const label = byPlan(g.windows)
+      out.windows.push(...countedFirst(g.windows.map(({ _plan: p, _spent, ...w }, i) => {
         const selected = gift.allModels.filter((m) => best.get(m.toLowerCase()) === i)
         const models = selected.map(giftID)
         const scoped = models.length ? { ...w, models } : { ...w, aside: true }
         // the card names a bucket's model as the picker does (GLM-5.3-Flash-Trial);
-        // no plan prefix — the card's section header already says the account
+        // no plan prefix while one plan gives them all — the card's section
+        // header already says the account; with several, byPlan names each
         let name = w.name
         for (const m of selected) {
           const at = name.toLowerCase().indexOf(m.toLowerCase())
           if (at >= 0) name = name.slice(0, at) + giftID(m) + name.slice(at + m.length)
         }
-        return { ...scoped, name }
-      }))
+        return { ...scoped, name: label(name, p) }
+      })))
     }
   } catch {
     if (cached) {

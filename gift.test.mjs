@@ -208,7 +208,7 @@ test("a gift-only account's spent Start Plan bucket doesn't hold up a model its 
   }
   expect(counting("GLM-5.3")[0].used).toBe(0)
   // the spent bucket is still on the card, as ZCode shows it
-  expect(u.windows.find((w) => w.used === 100)).toMatchObject({ name: "GLM-5.3-Flash", aside: true })
+  expect(u.windows.find((w) => w.used === 100)).toMatchObject({ name: "ZCode Start Plan · GLM-5.3-Flash", aside: true })
   expect(u.windows).toHaveLength(3)
 })
 
@@ -245,4 +245,53 @@ test("a coding plan account's gift stays on its trial entries alone", async () =
   const coding = await (await hooks()).provider.models({ models: {} }, { auth: { type: "api", key: state.key } })
   const models = await (await hooks()).provider.models({ models: {} }, { auth })
   expect(Object.keys(models).filter((id) => !(id in coding))).toEqual(["GLM-5.3-Trial"])
+})
+
+// 01huadalang's account (Discord, 10-24): the new-user Start Plan and the
+// 1024 Dev Day plan both give GLM-5.3, and the new-user one is spent. The
+// 1024 plan's id, name, show_names, capabilities and grant_units are the
+// real /billing/preview bytes of an account it was offered to; its balance
+// rows are written in the shape the balance gives (no 1024 balance was
+// read), with the Start Plan's name as ganlerk's balance has it.
+const twoPlans = () => {
+  balance.plans = [
+    { plan_id: "zcode-v3-start-plan", user_plan_id: "s1", name: "ZCode Start Plan", status: "active", ends_at: now + 7 * 86400 },
+    { plan_id: "zcode-v3-start-plan-1024", user_plan_id: "d1", name: "ZCode 1024 Dev Day", status: "active", ends_at: now + 30 * 86400 },
+  ]
+  balance.balances = [
+    { plan_id: "zcode-v3-start-plan", user_plan_id: "s1", show_name: "GLM-5.3", capabilities: ["model:glm-5.3"], total_units: 3_000_000, used_units: 3_000_000, remaining_units: 0 },
+    { plan_id: "zcode-v3-start-plan", user_plan_id: "s1", show_name: "GLM-5.3-Flash", capabilities: ["model:glm-5.3-flash"], total_units: 5_000_000, used_units: 0, remaining_units: 5_000_000 },
+    { plan_id: "zcode-v3-start-plan-1024", user_plan_id: "d1", entitlement_id: "ent-zcode-v3-start-plan-1024-1", show_name: "GLM-5.3-Flash", capabilities: ["model:glm-5.3-flash"], total_units: 300_000_000, used_units: 30_000_000, remaining_units: 270_000_000 },
+    { plan_id: "zcode-v3-start-plan-1024", user_plan_id: "d1", entitlement_id: "ent-zcode-v3-start-plan-1024-2", show_name: "GLM-5.3", capabilities: ["model:glm-5.3"], total_units: 200_000_000, used_units: 50_000_000, remaining_units: 150_000_000 },
+  ]
+}
+
+test("two gift plans' GLM-5.3 each show, named by plan, the live one first (01huadalang)", async () => {
+  twoPlans()
+  const only = { type: "oauth", access: jwt, refresh: JSON.stringify({ ...state, key: undefined, plan: undefined }), expires: 0 }
+  const u = await (await hooks()).auth.usage(async () => only, { id: "zcode" })
+  const names = u.windows.map((w) => w.name)
+  expect(new Set(names).size).toBe(names.length)
+  // the 1024 plan's GLM-5.3 shows its own amount left, and counts the model
+  expect(u.windows.find((w) => w.name === "ZCode 1024 Dev Day · GLM-5.3")).toMatchObject({ used: 25, amount: 50_000_000, limit: 200_000_000, models: ["glm-5.3", "GLM-5.3-Trial"] })
+  expect(u.windows.find((w) => w.name === "ZCode 1024 Dev Day · GLM-5.3").aside).toBeUndefined()
+  // the spent new-user plan's GLM-5.3 still shows, used up, set aside
+  expect(u.windows.find((w) => w.name === "ZCode Start Plan · GLM-5.3")).toMatchObject({ used: 100, amount: 3_000_000, aside: true })
+  // magpie's account row shows a card's first two windows: what is spent now
+  expect(u.windows.slice(0, 2).every((w) => !w.aside)).toBe(true)
+  expect(u.windows.slice(0, 2).some((w) => w.name === "ZCode 1024 Dev Day · GLM-5.3")).toBe(true)
+})
+
+test("a coding plan account's two gift plans' GLM-5.3 each show, named by plan", async () => {
+  twoPlans()
+  const u = await (await hooks()).auth.usage(async () => auth, { id: "zcode" })
+  const gift = u.windows.slice(1)
+  expect(gift.map((w) => w.name)).toEqual([
+    "ZCode Start Plan · GLM-5.3-Flash-Trial",
+    "ZCode 1024 Dev Day · GLM-5.3-Trial",
+    "ZCode Start Plan · GLM-5.3",
+    "ZCode 1024 Dev Day · GLM-5.3-Flash",
+  ])
+  expect(gift[1]).toMatchObject({ used: 25, models: ["GLM-5.3-Trial"] })
+  expect(gift[2]).toMatchObject({ used: 100, aside: true })
 })
