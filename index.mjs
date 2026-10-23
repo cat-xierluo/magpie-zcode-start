@@ -1459,6 +1459,110 @@ function startHeaders(h, jwt) {
   return out
 }
 
+// Claude Code's tool search, as ZCode's plans take it. Claude Code
+// (2.1.310) offers a tool named ToolSearch, names its deferred tools in a
+// system turn, and sends a deferred tool's schema with defer_loading only
+// once a search loaded it (a tool_reference in a ToolSearch result), with
+// a DeferredToolPlaceholder that keeps the search on. api.z.ai's
+// Anthropic endpoint, given a tool named exactly ToolSearch, shows the
+// model none of the other tools, Bash, Read and Write among them, but
+// those a tool_reference loaded: a subagent, which hasn't searched,
+// reports only the deferred tools, and the main turn has to search for
+// Bash before it can run it (小八 on Discord, 10-24; the beta header
+// changes nothing, the name alone does). ZCode itself sends no ToolSearch
+// and no defer_loading. So the search goes as SEARCH_ALIAS, in the tools
+// and in the turns that called it, the tools Claude Code sent with their
+// schemas go as ZCode's do, without defer_loading, and the placeholder is
+// left out; the model's calls to SEARCH_ALIAS come back as ToolSearch
+// (searchNamed).
+const SEARCH = "ToolSearch"
+const SEARCH_ALIAS = "ToolSearchTool"
+const PLACEHOLDER = "DeferredToolPlaceholder"
+
+// searchless is a Messages request body without Claude Code's ToolSearch
+// name, and whether it had the tool; anything else goes as it is.
+function searchless(text) {
+  if (typeof text !== "string" || !text.includes(`"${SEARCH}"`)) return { text, renamed: false }
+  let b
+  try {
+    b = JSON.parse(text)
+  } catch {
+    return { text, renamed: false }
+  }
+  if (!b || !Array.isArray(b.tools) || !b.tools.some((t) => t?.name === SEARCH)) return { text, renamed: false }
+  // a tool of the alias's own name keeps it; the search can't then be renamed
+  if (b.tools.some((t) => t?.name === SEARCH_ALIAS)) return { text, renamed: false }
+  b.tools = b.tools
+    .filter((t) => t?.name !== PLACEHOLDER)
+    .map((t) => {
+      if (!t || typeof t !== "object") return t
+      const { defer_loading, ...rest } = t
+      return t.name === SEARCH ? { ...rest, name: SEARCH_ALIAS } : rest
+    })
+  if (Array.isArray(b.messages))
+    for (const m of b.messages)
+      if (m?.role === "assistant" && Array.isArray(m.content))
+        for (const x of m.content) if (x?.type === "tool_use" && x.name === SEARCH) x.name = SEARCH_ALIAS
+  if (b.tool_choice?.type === "tool" && b.tool_choice.name === SEARCH) b.tool_choice.name = SEARCH_ALIAS
+  return { text: JSON.stringify(b), renamed: true }
+}
+
+// searchNamed is an answer to a request searchless renamed, the model's
+// calls to SEARCH_ALIAS named ToolSearch again, as Claude Code runs them:
+// a stream's content_block_start events, or a whole message's content.
+function searchNamed(res) {
+  if (!res.body) return res
+  const type = res.headers.get("content-type") ?? ""
+  const named = (block) => {
+    if (block?.type === "tool_use" && block.name === SEARCH_ALIAS) {
+      block.name = SEARCH
+      return true
+    }
+    return false
+  }
+  const line = (l) => {
+    if (!l.startsWith("data:") || !l.includes(`"${SEARCH_ALIAS}"`)) return l
+    try {
+      const d = JSON.parse(l.slice(5))
+      return named(d?.content_block) ? "data: " + JSON.stringify(d) : l
+    } catch {
+      return l
+    }
+  }
+  if (type.includes("text/event-stream")) {
+    const dec = new TextDecoder()
+    const enc = new TextEncoder()
+    let held = ""
+    const body = res.body.pipeThrough(
+      new TransformStream({
+        transform(chunk, ctl) {
+          held += dec.decode(chunk, { stream: true })
+          const i = held.lastIndexOf("\n")
+          if (i < 0) return
+          ctl.enqueue(enc.encode(held.slice(0, i + 1).split("\n").map(line).join("\n")))
+          held = held.slice(i + 1)
+        },
+        flush(ctl) {
+          held += dec.decode()
+          if (held) ctl.enqueue(enc.encode(line(held)))
+        },
+      }),
+    )
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })
+  }
+  if (!type.includes("json")) return res
+  return res.text().then((text) => {
+    let out = text
+    if (text.includes(`"${SEARCH_ALIAS}"`)) {
+      try {
+        const v = JSON.parse(text)
+        if (Array.isArray(v?.content) && v.content.map(named).some(Boolean)) out = JSON.stringify(v)
+      } catch {}
+    }
+    return new Response(out, { status: res.status, statusText: res.statusText, headers: res.headers })
+  })
+}
+
 // startURL is a Start Plan request's URL without the query the agent put
 // on it: Claude Code asks /v1/messages?beta=true, which magpie passes on,
 // and ZCode asks /v1/messages alone.
@@ -1670,9 +1774,18 @@ export async function ZCodeAuthPlugin({ client }) {
             // says it is spent can spend nothing and replay what was asked for
             let start = alone
             let orig, forcedGift = false
+            let renamed = false
+            const done = (res) => (renamed ? searchNamed(res) : res)
             if (opts.body != null) {
               orig = opts.body = typeof opts.body === "string" ? opts.body : await new Response(opts.body).text()
               delete opts.duplex
+              // Claude Code's tool search goes under another name, or
+              // ZCode's plans show the model no other tool (searchless)
+              const plain = searchless(orig)
+              if (plain.renamed) {
+                orig = opts.body = plain.text
+                renamed = true
+              }
               let m = modelOf(orig)
               if (m.toLowerCase().endsWith("-trial")) {
                 gift ??= await startPlan(s.jwt, s.device).catch(() => null)
@@ -1714,6 +1827,7 @@ export async function ZCodeAuthPlugin({ client }) {
             } else {
               if (!key) throw new Error("ZCode's sign-in has no key; sign in again")
               swap(s.base)
+              if (renamed) h.delete("content-length")
               h.delete("authorization")
               h.set("x-api-key", key)
               h.set("Authorization", "Bearer " + key)
@@ -1737,17 +1851,17 @@ export async function ZCodeAuthPlugin({ client }) {
               if (res.status >= 400 || json) {
                 const text = await res.text()
                 const spent = spentUp(text, res.status)
-                if (!spent && res.status < 400) return kept(res, text)
+                if (!spent && res.status < 400) return done(kept(res, text))
                 if (spent) {
                   for (const [k, until] of blocked) if (Date.now() >= until) blocked.delete(k)
                   blocked.set(s.key + "\0" + s.jwt + "\0" + modelOf(orig).toLowerCase(), Date.now() + 60_000)
                 }
-                return spent && res.status < 400 ? kept(new Response(text, { status: 429, headers: res.headers })) : kept(res, text)
+                return spent && res.status < 400 ? kept(new Response(text, { status: 429, headers: res.headers })) : done(kept(res, text))
               }
             }
             // the plan's answer goes on as it came, the account kept: the
             // built-in never marked a ZCode account lapsed nor cleared one
-            return kept(res)
+            return done(kept(res))
           },
         }
       },
