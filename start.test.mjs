@@ -23,7 +23,7 @@ beforeAll(async () => {
   server = Bun.serve({
     port: 0,
     async fetch(req) {
-      got.push({ method: req.method, path: new URL(req.url).pathname, headers: Object.fromEntries(req.headers), body: await req.text() })
+      got.push({ method: req.method, path: new URL(req.url).pathname, query: new URL(req.url).search, headers: Object.fromEntries(req.headers), body: await req.text() })
       if (answer) return answer()
       return Response.json({ type: "message", content: [] })
     },
@@ -59,11 +59,11 @@ const start = (site) => {
 // send makes a request as @ai-sdk/anthropic does, to the URL it was made for
 // place is what magpie tells the fetch of where the agent works, as its
 // headers: {dir, git}
-async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messages", asRequest = false, place = {} } = {}) {
+async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messages", asRequest = false, place = {}, extra = {} } = {}) {
   routeToFake()
   const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
   const opts = await hooks.auth.loader(async () => auth, { id: "zcode" })
-  const headers = { "content-type": "application/json", "x-api-key": "zcode", "anthropic-version": "2023-06-01", "user-agent": "ai-sdk/anthropic/3.0.81" }
+  const headers = { "content-type": "application/json", "x-api-key": "zcode", "anthropic-version": "2023-06-01", "user-agent": "ai-sdk/anthropic/3.0.81", ...extra }
   if (place.dir !== undefined) headers["x-magpie-work-dir"] = place.dir
   if (place.git !== undefined) headers["x-magpie-work-git"] = place.git
   const res = asRequest
@@ -198,8 +198,8 @@ test("a Start Plan request carries ZCode's headers, and only those", async () =>
     "anthropic-version": "2023-06-01",
     "content-type": "application/json",
     "http-referer": "https://zcode.z.ai",
-    "user-agent": "ZCode/3.14.3 ai-sdk/anthropic/3.0.81",
-    "x-zcode-app-version": "3.14.3",
+    "user-agent": "ZCode/3.16.3 ai-sdk/anthropic/3.0.81",
+    "x-zcode-app-version": "3.16.3",
     "x-title": "Z Code@cli",
     "x-release-channel": "production",
     "x-client-language": o.locale,
@@ -207,13 +207,56 @@ test("a Start Plan request carries ZCode's headers, and only those", async () =>
     "x-zcode-agent": "glm",
     "x-platform": `${process.platform}-${process.arch}`,
     "x-os-category": { darwin: "macos", win32: "windows" }[process.platform] ?? "linux",
-    "x-os-version": osVersion,
+    "x-os-version": release(),
     "x-request-id": h["x-request-id"],
     "x-zcode-session-type": "main",
     "x-zcode-trace-id": h["x-zcode-trace-id"],
+    "x-zcode-query-source": "main_turn",
   })
   expect(h["x-api-key"]).toBeUndefined()
   expect(h["x-device-mid"]).toBeUndefined()
+})
+
+// What Claude Code sends magpie, which magpie's gateway passes on to a
+// provider without an account of its own, as a plugin's is: its betas,
+// x-app, its SDK's x-stainless-* and ?beta=true. ZCode sends none of it.
+const CLAUDE_CODE = {
+  "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27",
+  "anthropic-dangerous-direct-browser-access": "true",
+  "x-app": "cli",
+  "x-claude-code-session-id": "0b6f0c55-5e3a-4c55-9d0e-6c7c1f3a2b11",
+  "x-stainless-lang": "js",
+  "x-stainless-package-version": "0.60.0",
+  "x-stainless-os": "MacOS",
+  "x-stainless-arch": "arm64",
+  "x-stainless-runtime": "node",
+  "x-stainless-runtime-version": "v24.3.0",
+  "x-stainless-retry-count": "0",
+  "x-stainless-timeout": "600",
+  accept: "application/json, text/event-stream",
+  "accept-language": "*",
+  "sec-fetch-mode": "cors",
+}
+
+test("a Start Plan request from Claude Code goes with ZCode's headers alone, without ?beta=true", async () => {
+  for (const asRequest of [false, true]) {
+    got.length = 0
+    const r = await send(start("zai"), JSON.stringify(agentBody), { url: "https://api.z.ai/api/anthropic/v1/messages?beta=true", asRequest, extra: CLAUDE_CODE })
+    expect(r.path).toBe("/zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages")
+    expect(r.query).toBe("")
+    const h = own(r.headers)
+    for (const k of Object.keys(CLAUDE_CODE)) if (!TRANSPORT.has(k)) expect(h[k]).toBeUndefined()
+    expect(Object.keys(h).sort()).toEqual(
+      ["authorization", "anthropic-version", "content-type", "http-referer", "user-agent", "x-zcode-app-version", "x-title", "x-release-channel", "x-client-language", "x-client-timezone", "x-zcode-agent", "x-platform", "x-os-category", "x-os-version", "x-request-id", "x-zcode-session-type", "x-zcode-trace-id", "x-zcode-query-source"].sort(),
+    )
+    expect(r.headers.accept).not.toBe(CLAUDE_CODE.accept)
+  }
+})
+
+test("a GLM Coding Plan request keeps the agent's query and headers", async () => {
+  const r = await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, JSON.stringify(agentBody), { url: "https://api.z.ai/api/anthropic/v1/messages?beta=true", extra: { "anthropic-beta": "x-1" } })
+  expect(r.query).toBe("?beta=true")
+  expect(r.headers["anthropic-beta"]).toBe("x-1")
 })
 
 test("a Start Plan request's body is dressed as ZCode's", async () => {
