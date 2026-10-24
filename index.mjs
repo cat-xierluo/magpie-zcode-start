@@ -214,8 +214,15 @@ async function plansOf(s) {
   let sure = false
   try {
     if (!(await plan(s))) start = true
-    else gift = await startPlan(s.jwt, s.device).catch(() => null)
-    sure = true
+    else {
+      // a gift read that failed is unknown, not "no gift": asked again in
+      // a minute, so its trial entries come back with the next list (an
+      // expired session is known: the card says to sign in again)
+      let failed = false
+      gift = await startPlan(s.jwt, s.device).catch(() => ((failed = !jwtExpired(s.jwt)), null))
+      sure = !failed
+    }
+    if (start) sure = true
   } catch {
     // the plan list could not be read: a key account takes the dual route
     // (start stays false, the gift is kept, a minute's ttl), so a gift
@@ -614,6 +621,21 @@ async function claimHint(s) {
   const n = plans.length
   const plan = first(...plans.map((p) => (typeof p?.name === "string" ? p.name : "")), "ZCode gift plan")
   return { name: CLAIM_HINT, used: 0, aside: true, display: `${n} · ${plan}` }
+}
+
+// GIFT_SIGN_IN is the card's line for an account whose gift plans can't
+// be read: ZCode's gift plans (the Start Plan, ZCode 1024 Dev Day, ZCode
+// Trust Build) are served by zcode.z.ai to ZCode's own session alone, so
+// a GLM Coding Plan key, or a sign-in whose ZCode session has run out
+// (that token can't be renewed), lists no <model>-Trial entries and
+// spends the coding plan alone. A fixed sentence, so magpie can
+// translate it; why goes in the display. Set aside: it stops nothing.
+const GIFT_SIGN_IN = "ZCode gift plans (-Trial models) need ZCode's sign-in"
+function giftSignIn(s, key) {
+  if (isTeam(s)) return null
+  if (!s.jwt) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: key ? "not read with an API key: add the account with a ZCode sign-in" : "this sign-in has no ZCode session: sign in again" }
+  if (jwtExpired(s.jwt)) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "ZCode's sign-in has expired: sign in again" }
+  return null
 }
 
 // startUsage is a gift-only account's card: its buckets, or the words
@@ -1781,7 +1803,11 @@ export async function ZCodeAuthPlugin({ client }) {
           if (out[id]) continue
           out[id] = model({ ...about(raw), id }, url)
         }
-        if (fell) out[Symbol.for("magpie.fellBack")] = true
+        // a fallback tells magpie to keep the list it was told last, which
+        // predates the gift read just made: an account whose gift lists
+        // trial entries is told this list, so ZCode's config out of reach
+        // (a remote box that can't get its CDN) never hides them
+        if (fell && !giftNames(gift).length) out[Symbol.for("magpie.fellBack")] = true
         return out
       },
     },
@@ -1953,6 +1979,10 @@ export async function ZCodeAuthPlugin({ client }) {
           if (!card.error) {
             const hint = await claimHint(s)
             if (hint) card.windows = [...(card.windows ?? []), hint]
+            // a key, or a ZCode session that ran out: no gift read, so no
+            // -Trial models, said on the card rather than left out unsaid
+            const need = start ? null : giftSignIn(s, auth?.type === "api")
+            if (need) card.windows = [...(card.windows ?? []), need]
           }
           return card
         } catch (e) {
@@ -2002,4 +2032,7 @@ export async function ZCodeAuthPlugin({ client }) {
 }
 
 // for tests
-export const _internal = { entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT }
+// config sets what zcodeConfig has read, for tests: null is ZCode's config
+// out of reach, undefined forgets it
+const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
+export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT }

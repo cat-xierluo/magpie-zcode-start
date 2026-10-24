@@ -310,14 +310,16 @@ test("a ZCode sign-in that expired after the gift was cached goes to the coding 
   expect(sent.at(-1).headers["x-api-key"]).toBe(KEY)
 })
 
-test("a gift read that fails at once still trusts the plan list for ten minutes", async () => {
+// a failed gift read is unknown, not "no gift": a ten-minute "none" hid
+// the account's -Trial models for ten minutes after one hiccup
+test("a gift read that fails at once is asked again in a minute", async () => {
   answers["/api/biz/subscription/list"] = ok([{ productName: "GLM Coding Pro", status: "VALID" }])
   answers["/api/v1/zcode-plan/billing/balance"] = new Response("", { status: 500 })
   await sendTo(MSG, body("glm-5.3-flash"))
   const r = _internal.routes.get(KEY + "\0" + jwt)
   expect(r.start).toBe(false) // on the coding plan
   expect(r.gift).toBeNull() // the balance read failed: no gift known
-  expect(r.ttl).toBe(600_000) // the plan list read fine: 10 minutes
+  expect(r.ttl).toBe(60_000) // the gift is unknown: a minute
 })
 
 test("a coding account with no gift keeps its 10-minute cache", async () => {

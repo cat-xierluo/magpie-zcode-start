@@ -295,3 +295,63 @@ test("a coding plan account's two gift plans' GLM-5.3 each show, named by plan",
   expect(gift[1]).toMatchObject({ used: 25, models: ["GLM-5.3-Trial"] })
   expect(gift[2]).toMatchObject({ used: 100, aside: true })
 })
+
+// bigsteven (Discord, 10-24): GLM Coding Plan spent, no GLM-5.3-Trial in
+// the list. ZCode's config out of reach marks the list a fallback, and
+// magpie then keeps the list it was told last, from before the gift: the
+// -Trial entries just read went with it. A list with trial entries is
+// told as it is.
+test("ZCode's config out of reach still tells a gift's -Trial entries, not a fallback", async () => {
+  _internal.config(null)
+  try {
+    balance.balances[0].capabilities = ["model:glm-5.3"]
+    const models = await (await hooks()).provider.models({ models: {} }, { auth })
+    expect(models["GLM-5.3-Trial"]?.name).toBe("GLM-5.3-Trial")
+    expect(models[Symbol.for("magpie.fellBack")]).toBeUndefined()
+    // with no gift there is nothing new to tell: still a fallback
+    _internal.routes.clear()
+    balance.plans = []
+    const none = await (await hooks()).provider.models({ models: {} }, { auth })
+    expect(Object.keys(none).some((id) => id.endsWith("-Trial"))).toBe(false)
+    expect(none[Symbol.for("magpie.fellBack")]).toBe(true)
+  } finally {
+    _internal.config(undefined)
+  }
+})
+
+test("a gift read that failed lists its -Trial entries again a minute later", async () => {
+  balance.balances[0].capabilities = ["model:glm-5.3"]
+  const good = balance
+  balance = null
+  const was = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    if (balance === null && new URL(String(input)).pathname === "/api/v1/zcode-plan/billing/balance") return new Response("", { status: 502 })
+    return was(input, init)
+  }
+  const h = await hooks()
+  expect((await h.provider.models({ models: {} }, { auth }))["GLM-5.3-Trial"]).toBeUndefined()
+  balance = good
+  const r = _internal.routes.get(state.key + "\0" + jwt)
+  r.at -= 61_000
+  expect((await h.provider.models({ models: {} }, { auth }))["GLM-5.3-Trial"]?.name).toBe("GLM-5.3-Trial")
+})
+
+// a key, or a sign-in whose ZCode session ran out, reads no gift: the card
+// says why there are no -Trial entries instead of leaving them out unsaid
+test("a coding plan with no live ZCode session says its gift plans need ZCode's sign-in", async () => {
+  const line = (u) => u.windows.find((w) => w.name === "ZCode gift plans (-Trial models) need ZCode's sign-in")
+  const h = await hooks()
+  const key = await h.auth.usage(async () => ({ type: "api", key: state.key }), { id: "zcode" })
+  expect(line(key)).toEqual({ name: "ZCode gift plans (-Trial models) need ZCode's sign-in", used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" })
+  expect(Object.keys(await h.provider.models({ models: {} }, { auth: { type: "api", key: state.key } })).some((id) => id.endsWith("-Trial"))).toBe(false)
+  const dead = ["{}", JSON.stringify({ exp: now - 60 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".synthetic"
+  const aged = { ...auth, refresh: JSON.stringify({ ...state, jwt: dead }) }
+  const u = await h.auth.usage(async () => aged, { id: "zcode" })
+  expect(u.error).toBeUndefined()
+  expect(line(u)?.display).toBe("ZCode's sign-in has expired: sign in again")
+  expect(Object.keys(await h.provider.models({ models: {} }, { auth: aged })).some((id) => id.endsWith("-Trial"))).toBe(false)
+  // a live session reads the gift: no such line, its -Trial entries listed
+  const live = await h.auth.usage(async () => auth, { id: "zcode" })
+  expect(line(live)).toBeUndefined()
+  expect(live.windows.some((w) => w.name.includes("-Trial") || (w.models ?? []).some((m) => m.endsWith("-Trial")))).toBe(true)
+})
