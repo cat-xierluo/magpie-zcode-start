@@ -437,12 +437,52 @@ async function codingUsage(s) {
   if (level) out.plan = "GLM Coding " + level[0].toUpperCase() + level.slice(1)
   out.windows = limitWindows(d)
   const resets = personalResets(root, s.key)
+  let subs = null
   try {
-    Object.assign(out, termOf(await call("GET", root + "/api/biz/subscription/list", { auth: s.key })))
+    subs = await call("GET", root + "/api/biz/subscription/list", { auth: s.key })
+    Object.assign(out, termOf(subs))
   } catch {}
   const r = await resets
   if (r) out.resets = r
+  // a key whose account has no plan in force, read as such, says so
+  // rather than showing an empty card: what a key can spend is a GLM
+  // Coding Plan alone (a ZCode gift plan is never one, see NO_PLAN_KEY).
+  // A list that couldn't be read, a level, a counted window or a plan
+  // the sign-in saved keeps the card as it was.
+  const valid = (Array.isArray(subs) ? subs : []).some((x) => String(x?.status ?? "").toUpperCase() === "VALID")
+  if (subs !== null && !valid && !level && !s.plan && !out.windows.some((w) => !w.aside)) return { error: NO_PLAN_KEY }
   return out
+}
+
+// NO_PLAN_KEY is a key with no GLM Coding Plan behind it. ZCode's gift
+// plans (its Start Plan, ZCode 1024 Dev Day) are served by zcode.z.ai
+// to ZCode's own session token, which a sign-in with ZCode (the app's,
+// or Z.ai's or BigModel's in the browser) carries and a key never does:
+// with a key, a gift-only account has nothing to spend, and Z.ai answers
+// each request 1113 (rtbeilin on X, 10-24).
+const NO_PLAN_KEY =
+  "this key's account has no GLM Coding Plan; ZCode's gift plans (the Start Plan, ZCode 1024 Dev Day) are spent only with ZCode's sign-in, never with a key — add the account with \"ZCode app's sign-in\" or a ZCode sign-in in the browser"
+
+// noPlanKey is a coding plan's 1113 refusal (no plan, no resource
+// package) to a sign-in with no ZCode session, its message followed by
+// NO_PLAN_KEY; anything else goes on as it came. Read only once the
+// answer has failed.
+function noPlanKey(res, text) {
+  let v
+  try {
+    v = JSON.parse(text)
+  } catch {
+    return null
+  }
+  // Z.ai names the code in error.code ("1113", as magpie's
+  // zhipu_coding_test has it) or error.type (its 401's "1000"), BigModel's
+  // envelope in code
+  if (![v?.error?.code, v?.error?.type, v?.code].some((c) => String(c ?? "") === "1113")) return null
+  const said = first(v?.error?.message, v?.msg, v?.message)
+  const out = v?.error && typeof v.error === "object" ? { ...v, error: { ...v.error, message: (said ? said + " — " : "") + NO_PLAN_KEY } } : { ...v, msg: (said ? said + " — " : "") + NO_PLAN_KEY }
+  const h = new Headers(res.headers)
+  h.set("content-type", "application/json")
+  return new Response(JSON.stringify(out), { status: res.status, statusText: res.statusText, headers: h })
 }
 
 // startNum reads a number the balance gives as a number or a string.
@@ -1838,6 +1878,14 @@ export async function ZCodeAuthPlugin({ client }) {
             if (start && res.status >= 400) {
               const text = await res.text()
               if (startRefused(res.status, text)) return kept(startBlocked(res, text))
+              res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+            }
+            // a key with no plan behind it: what Z.ai said, and why a
+            // ZCode gift plan can't be had with a key (NO_PLAN_KEY)
+            if (!start && !s.jwt && res.status >= 400) {
+              const text = await res.text()
+              const why = noPlanKey(res, text)
+              if (why) return done(kept(why))
               res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
             }
             // a trial entry's gift answer that can't serve the request is

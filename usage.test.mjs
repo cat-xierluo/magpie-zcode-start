@@ -63,9 +63,31 @@ test("a Coding Plan's five hours and week", async () => {
   })
   expect(calls.every((c) => c.url.origin === "https://api.z.ai")).toBe(true)
   // an API key, BigModel's, is asked on its own site
-  const bm = serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : ok([])))
-  expect(await usage({ type: "api", key: "k", metadata: { site: "bigmodel" } })).toEqual({ signIn: "kept", windows: [] })
+  const bm = serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ level: "lite", limits: [] }) : ok([{ productName: "GLM Coding Lite", status: "VALID" }])))
+  expect(await usage({ type: "api", key: "k", metadata: { site: "bigmodel" } })).toEqual({ signIn: "kept", plan: "GLM Coding Lite", windows: [] })
   expect(bm[0].url.origin).toBe("https://open.bigmodel.cn")
+})
+
+// rtbeilin (X, 10-24): ZCode 1024 Dev Day, no GLM Coding Plan, "API Key
+// doesn't work". The gift is ZCode's session's alone; a key's card says
+// so instead of showing nothing
+test("a key with no GLM Coding Plan says a ZCode gift plan needs ZCode's sign-in", async () => {
+  const none = /no GLM Coding Plan; ZCode's gift plans .* are spent only with ZCode's sign-in, never with a key/
+  for (const site of ["zai", "bigmodel"]) {
+    serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : ok([])))
+    expect((await usage({ type: "api", key: "k", metadata: { site } })).error).toMatch(none)
+    // a subscription that ran out is no plan in force either
+    serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : ok([{ productName: "GLM Coding Lite", status: "EXPIRED" }])))
+    expect((await usage({ type: "api", key: "k", metadata: { site } })).error).toMatch(none)
+  }
+  // a list that couldn't be read is not "no plan"
+  serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [] }) : new Response("", { status: 500 })))
+  expect(await usage({ type: "api", key: "k", metadata: { site: "zai" } })).toEqual({ signIn: "kept", windows: [] })
+  // a counted window or a level is a plan, whatever the list says
+  serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ limits: [{ unit: 3, number: 5, percentage: 3 }] }) : ok([])))
+  expect((await usage({ type: "api", key: "k", metadata: { site: "zai" } })).error).toBeUndefined()
+  serve(({ url }) => (url.pathname.endsWith("/limit") ? ok({ level: "pro", limits: [] }) : ok([])))
+  expect((await usage({ type: "api", key: "k", metadata: { site: "zai" } })).error).toBeUndefined()
 })
 
 test("windows, names and terms as Go reads them", () => {

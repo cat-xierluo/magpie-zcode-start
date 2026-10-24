@@ -53,6 +53,11 @@ over Anthropic's Messages API. Provider id: `zcode`.
     another's credentials: to use both, add the app's sign-in once for each.
 - **GLM Coding Plan API key**
   - Paste a key (`<id>.<secret>`) and say which site it is from.
+  - A key reaches the GLM Coding Plan alone. ZCode's gift plans (the
+    Start Plan, ZCode 1024 Dev Day) are served to ZCode's own session,
+    which a key doesn't carry: for an account with only a gift plan, the
+    card and each refused request (1113) say to sign in with ZCode
+    instead.
 
 ## Where the sign-in is kept
 
