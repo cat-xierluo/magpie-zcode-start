@@ -224,7 +224,12 @@ async function plansOf(s) {
       gift = await startPlan(s.jwt, s.device).catch(() => ((failed = !jwtExpired(s.jwt)), null))
       sure = !failed
     }
-    if (start) sure = true
+    // a key whose plan list read no plan, where the last read found one,
+    // is asked again in a minute rather than sent to the Start Plan for
+    // ten: one list without the plan (a renewal's boundary, a hiccup)
+    // turned a GLM Coding Plan account's every request into the Start
+    // Plan's 405 until the route was read again (#369)
+    if (start) sure = !(s.key && r && !r.start)
   } catch {
     // the plan list could not be read: a key account takes the dual route
     // (start stays false, the gift is kept, a minute's ttl), so a gift
@@ -1916,7 +1921,13 @@ export async function ZCodeAuthPlugin({ client }) {
             // it: the account blocked, or the network
             if (start && res.status >= 400) {
               const text = await res.text()
-              if (startRefused(res.status, text)) return kept(startBlocked(res, text))
+              if (startRefused(res.status, text)) {
+                // a key account sent to the Start Plan (its plan list read
+                // none) reads its plans again on the next request, so a
+                // coding plan that is there after all is used (#369)
+                if (s.key && !forcedGift) routes.delete(s.key + "\0" + s.jwt)
+                return kept(startBlocked(res, text))
+              }
               res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
             }
             // a key with no plan behind it: what Z.ai said, and why a
@@ -1972,6 +1983,10 @@ export async function ZCodeAuthPlugin({ client }) {
           return out
         }
         try {
+          // a card read is a fresh read: the route is read again with it,
+          // so a plan bought, a gift claimed or a plan lapsed reaches the
+          // requests when the card shows it, not ten minutes later (#379)
+          routes.delete(s.key + "\0" + s.jwt)
           const { start, gift } = await plansOf(s)
           let card
           if (isTeam(s)) {

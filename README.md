@@ -83,7 +83,11 @@ the ZCode app's sign-in (`refresh` then holds `"source": "zcode"`).
 ## How requests are routed
 
 Before each request, the plugin checks which plan the account is on, and
-asks again every 10 minutes:
+asks again every 10 minutes, and with every read of the usage card, so a
+plan bought, a gift claimed or a plan lapsed reaches the requests when the
+card shows it. A key whose plan list once reads no plan after reading one
+is asked again after a minute, and a Start Plan refusal on such a key reads
+the plans again on the next request:
 
 - If the key's account has a GLM Coding Plan
   (`/api/biz/subscription/list`), its requests go to that plan. A model
