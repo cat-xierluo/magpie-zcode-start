@@ -169,3 +169,27 @@ test("ZCode 3.15's plan key is read from its config.json", async () => {
   expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", base: "https://api.z.ai/api/anthropic" })
   config({})
 })
+
+// wakkana on Discord (WorkBuddy's, the same here): two accounts of one
+// name are two accounts. The sign-in keeps ZCode's user id beside the name,
+// for magpie to tell them apart by, and an entry follows ZCode only while
+// ZCode is signed in to that same user id, not another of its name.
+test("the app's sign-in keeps the user id, and follows ZCode by it", async () => {
+  const as = (id) => JSON.stringify({ name: "Ada", user_id: id })
+  zcodeHas({ [KEY]: "id1.secret1", zcodejwttoken: "j1", "oauth:zai:user_info": as("u1") })
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.accountId).toBe("Ada")
+  expect(got.uid).toBe("u1")
+  expect(JSON.parse(got.refresh).uid).toBeUndefined()
+  const auth = { ...got, type: "oauth" }
+
+  zcodeHas({ [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:user_info": as("u1") })
+  expect(_internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
+  expect(_internal.stateOf(auth).uid).toBeUndefined()
+
+  // another account named Ada: A's entry keeps what it saved
+  zcodeHas({ [KEY]: "id3.secret3", zcodejwttoken: "j3", "oauth:zai:user_info": as("u2") })
+  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1" })
+})

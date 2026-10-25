@@ -1001,6 +1001,10 @@ async function signedIn(site, token, jwt, device, onTeam = false) {
 // TEAM marks a team seat's account name beside the account's own.
 const TEAM = "team"
 const who = (u) => first(String(u?.email ?? "").replace(/@phone\.local$/, ""), u?.name, u?.user_id, "ZCode")
+// uidOf is the account's user id, kept beside its name: magpie tells two
+// accounts of one name apart by it, a name being no one's own (wakkana on
+// Discord, WorkBuddy's)
+const uidOf = (u) => (u?.user_id === undefined || u?.user_id === null ? "" : String(u.user_id).trim())
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // authorize opens ZCode's sign-in flow on site; its callback polls it.
@@ -1059,6 +1063,7 @@ async function authorize(site, log, onTeam = false) {
           // the key doesn't run out; ZCode's token, when it is all there is, does
           expires: s.key || isTeam(s) ? 0 : jwtExpiry(s.jwt),
           accountId: onTeam ? `${who(got.user)} (${TEAM})` : who(got.user),
+          ...(uidOf(got.user) ? { uid: uidOf(got.user) } : {}),
         }
       }
     },
@@ -1220,7 +1225,7 @@ function ownSignIn() {
       } catch {}
     }
   }
-  return { ...s, user: who(info) }
+  return { ...s, user: who(info), uid: uidOf(info) }
 }
 
 // asZCode is the sign-in "as ZCode": what it reads is ZCode's own.
@@ -1232,9 +1237,9 @@ function asZCode() {
     async callback() {
       const own = ownSignIn()
       if (!own) return { type: "failed", error: "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
-      const { user, ...s } = own
+      const { user, uid, ...s } = own
       const state = { source: "zcode", device: anyDevice, ...s }
-      return { type: "success", refresh: JSON.stringify(state), access: s.key || s.jwt || "", expires: 0, accountId: user }
+      return { type: "success", refresh: JSON.stringify(state), access: s.key || s.jwt || "", expires: 0, accountId: user, ...(uid ? { uid } : {}) }
     },
   }
 }
@@ -1253,8 +1258,9 @@ function stateOf(auth) {
       // send this account's requests as that one, and an expired session
       // says sign in again (EXPIRED) rather than borrowing another's.
       const own = ownSignIn()
-      if (own && own.user === String(auth.accountId ?? "")) {
-        const { user, ...now } = own
+      // (by user id where both have one: another account may share the name)
+      if (own && own.user === String(auth.accountId ?? "") && (!own.uid || !auth.uid || own.uid === String(auth.uid))) {
+        const { user, uid: _uid, ...now } = own
         s = { source: "zcode", device: s.device, plan: s.plan, ...now }
       }
     }
