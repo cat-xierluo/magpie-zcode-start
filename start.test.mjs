@@ -4,7 +4,8 @@
 // (#343), the day in a
 // <system-reminder> turn of its own, one cache mark in the turns, none on
 // the tools and the sign-in's device id in metadata.user_id. A GLM Coding
-// Plan or team request goes as the agent sent it. The requests go to a
+// Plan or team request goes as the agent sent it, but for that device id,
+// which ZCode puts on every request (#387). The requests go to a
 // local Bun.serve that records them; nothing reaches z.ai or bigmodel.
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
@@ -12,13 +13,13 @@ import { arch, homedir, release, tmpdir } from "node:os"
 import { basename } from "node:path"
 import { realpathSync } from "node:fs"
 
-let ZCodeAuthPlugin, PROMPT
+let ZCodeAuthPlugin, PROMPT, _internal
 let server
 const got = []
 let answer = null // what the fake answers instead, when set
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
   PROMPT = (await import("./prompt.mjs")).default
   server = Bun.serve({
     port: 0,
@@ -359,14 +360,20 @@ test("magpie's word on the folder goes to no vendor on a Coding Plan request eit
     await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, agentText, { place: { dir: "%2Fx", git: "no" } }),
     "one.secret",
     "/api.z.ai/api/anthropic/v1/messages",
+    _internal.keyDevice("one.secret"),
   )
 })
 
-// the GLM Coding Plan and team seats: as the agent sent it, as 0.1.6 sent it
+// the GLM Coding Plan and team seats: as the agent sent it, as 0.1.6 sent
+// it, but for metadata.user_id naming the account's device as ZCode's
+// client does on every plan (#387)
 const agentText = JSON.stringify(agentBody)
-const sentAsIs = (r, key, path) => {
+const sentAsIs = (r, key, path, device) => {
   expect(r.path).toBe(path)
-  expect(r.body).toBe(agentText)
+  const b = JSON.parse(r.body)
+  expect(JSON.parse(b.metadata.user_id)).toEqual({ device_id: device, account_uuid: "", session_id: "" })
+  delete b.metadata.user_id
+  expect(b).toEqual(agentBody)
   expect(own(r.headers)).toEqual({
     authorization: "Bearer " + key,
     "x-api-key": key,
@@ -377,19 +384,19 @@ const sentAsIs = (r, key, path) => {
 }
 
 test("a GLM Coding Plan key's request goes as the agent sent it", async () => {
-  sentAsIs(await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, agentText), "one.secret", "/api.z.ai/api/anthropic/v1/messages")
+  sentAsIs(await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, agentText), "one.secret", "/api.z.ai/api/anthropic/v1/messages", _internal.keyDevice("one.secret"))
   got.length = 0
-  sentAsIs(await send({ type: "api", key: "two.secret", metadata: { site: "bigmodel" } }, agentText, { url: "https://open.bigmodel.cn/api/anthropic/v1/messages" }), "two.secret", "/open.bigmodel.cn/api/anthropic/v1/messages")
+  sentAsIs(await send({ type: "api", key: "two.secret", metadata: { site: "bigmodel" } }, agentText, { url: "https://open.bigmodel.cn/api/anthropic/v1/messages" }), "two.secret", "/open.bigmodel.cn/api/anthropic/v1/messages", _internal.keyDevice("two.secret"))
 })
 
 test("a team seat's request goes as the agent sent it, ZCode's token or not", async () => {
   const s = { site: "zai", base: "https://api.z.ai/api/anthropic", key: "seat.secret", token: "tok", org: "o1", project: "p1", jwt, device: DEVICE }
   const auth = { type: "oauth", access: s.key, refresh: JSON.stringify(s), expires: 0 }
-  sentAsIs(await send(auth, agentText, { requests: 2 }), "seat.secret", "/api.z.ai/api/anthropic/v1/messages")
+  sentAsIs(await send(auth, agentText, { requests: 2 }), "seat.secret", "/api.z.ai/api/anthropic/v1/messages", DEVICE)
   expect(got.filter((r) => r.path.endsWith("/billing/balance"))).toHaveLength(1)
   expect(got.filter((r) => r.path.endsWith("/subscription/list"))).toHaveLength(0)
   got.length = 0
-  sentAsIs(await send({ ...auth, refresh: JSON.stringify({ ...s, jwt: "" }) }, agentText), "seat.secret", "/api.z.ai/api/anthropic/v1/messages")
+  sentAsIs(await send({ ...auth, refresh: JSON.stringify({ ...s, jwt: "" }) }, agentText), "seat.secret", "/api.z.ai/api/anthropic/v1/messages", DEVICE)
   expect(got).toHaveLength(1)
 })
 

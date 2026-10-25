@@ -25,7 +25,12 @@ over Anthropic's Messages API. Provider id: `zcode`.
     agent's system prompt at the end of the third (a fourth block is
     refused, #343), the day in a `<system-reminder>` turn before the agent's
     turns, and the sign-in's device id in `metadata.user_id`. GLM Coding
-    Plan and team requests go as the agent sent them. zcode.z.ai also
+    Plan and team requests go as the agent sent them, but for that same
+    `metadata.user_id` when the agent sent none: ZCode puts it on every
+    request, and the plan's endpoint keeps a prompt cache on the machine it
+    picks by it, so without it the cache is mostly missed (#387). An
+    account known only by its key gets a device id made from the key, the
+    same on every start. zcode.z.ai also
     answers 405 code 3012 to every request of an account its risk control
     blocked, ZCode's own app's included (plugins#348). That answer comes
     back as ZCode's words, then "ZCode's risk control blocked this account
