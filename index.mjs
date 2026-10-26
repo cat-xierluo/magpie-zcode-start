@@ -1200,6 +1200,86 @@ function configKey(key) {
   return null
 }
 
+// ownLocation is where ZCode 3.16 finds the account's own coding plan key
+// when it keeps none: credentials.json's
+// project-key-location:v1:<[origin, family, accountId, team, 1, selection]>,
+// URI-encoded JSON, holds { organizationId, projectId, apiKeyId } (its
+// ProjectAccessTokenClient). ZCode trades that key for a short-lived
+// project token each time; here its secret is read (located), as a sign-in
+// here reads its own key's. The account's own (team null), of the family
+// ZCode is on first, else Z.ai's, as ZCode lists them; one of another
+// account the profile names is left alone (meraki7304, #410).
+const LOCATION = "project-key-location:v1:"
+function ownLocation(store, key) {
+  const set = readJSON(join(settingDir(), "setting.json"))
+  const fams = set?.providerFamilyDomain === "bigmodel" ? ["bigmodel", "zai"] : ["zai", "bigmodel"]
+  const found = []
+  for (const [name, v] of Object.entries(store)) {
+    if (!name.startsWith(LOCATION)) continue
+    let at
+    try {
+      at = JSON.parse(decodeURIComponent(name.slice(LOCATION.length)))
+    } catch {
+      continue
+    }
+    if (!Array.isArray(at) || at[3] !== null || String(at[4]) !== "1" || !fams.includes(at[1])) continue
+    let loc
+    try {
+      loc = JSON.parse(decrypt(key, v) ?? "")
+    } catch {}
+    const org = first(loc?.organizationId), project = first(loc?.projectId), apiKeyId = first(loc?.apiKeyId)
+    if (!org || !project || !apiKeyId) continue
+    found.push({ site: at[1], origin: typeof at[0] === "string" ? at[0] : "", account: String(at[2] ?? ""), org, project, apiKeyId })
+  }
+  for (const site of fams) {
+    const token = first(decrypt(key, store[`oauth:${site}:access_token`]))
+    if (!token) continue
+    let me = ""
+    try {
+      me = String(JSON.parse(decrypt(key, store[`oauth:${site}:user_info`]) ?? "{}")?.id ?? "")
+    } catch {}
+    const mine = found.filter((l) => l.site === site && (!me || l.account === me))
+    if (!mine.length) continue
+    const l = mine[0]
+    // the origin ZCode asked, when it is the site's own; else the site's API
+    let origin = SITES[site].api
+    try {
+      const u = new URL(l.origin)
+      const h = u.host.toLowerCase()
+      if (u.protocol === "https:" && (site === "zai" ? h === "z.ai" || h.endsWith(".z.ai") : h === "bigmodel.cn" || h.endsWith(".bigmodel.cn"))) origin = u.origin
+    } catch {}
+    return { site, base: SITES[site].base, token, loc: { origin, org: l.org, project: l.project, apiKeyId: l.apiKeyId } }
+  }
+  return null
+}
+
+// located gives a sign-in that has only ZCode's key location (ownLocation)
+// its key: the secret of the key it names, read as ZCode lists the
+// project's keys (BigModel's token bare, Z.ai's as a Bearer). Nothing is
+// made: a location whose key is gone (404) leaves the sign-in keyless, as
+// before; any other failure is said. A key read is kept for the token.
+const locatedKeys = new Map()
+async function located(s) {
+  if (!s || s.key || !s.loc || !s.token) return s
+  const l = s.loc
+  const id = [s.token, l.origin, l.org, l.project, l.apiKeyId].join("\0")
+  let got = locatedKeys.get(id)
+  if (!got || (got.err && Date.now() - got.at >= 60_000)) {
+    const auth = s.site === "zai" ? "Bearer " + s.token : s.token
+    try {
+      const secret = first((await call("GET", `${keysURL(l.origin, l.org, l.project)}/copy/${encodeURIComponent(l.apiKeyId)}`, { auth }))?.secretKey)
+      got = secret ? { key: `${l.apiKeyId}.${secret}` } : { err: new Error("no secret for the key") }
+    } catch (e) {
+      got = e?.status === 404 ? { key: "" } : { err: e }
+    }
+    got.at = Date.now()
+    locatedKeys.set(id, got)
+  }
+  if (got.err) throw new Error(`ZCode's ${SITES[s.site].name} coding plan key: ${got.err.message} — sign in to ZCode again`)
+  if (got.key) s.key = got.key
+  return s
+}
+
 // ownSignIn is what ZCode is signed in to now: the account, its coding
 // plan key, ZCode's session token (the Start Plan's key) and the team plan
 // it is switched to; null when it has none of them.
@@ -1220,6 +1300,8 @@ function ownSignIn() {
   // ZCode 3.15 keeps no plan key in its credentials; the one it uses sits
   // in config.json, the provider's options.apiKey (yetone/magpie#2130)
   if (!s.key) s = configKey(key) || s
+  // ZCode 3.16 keeps neither: only where the key is (#410)
+  if (!s.key) s = ownLocation(store, key) || s
   const jwt = first(first(decrypt(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
   const team = ownTeam(store, key)
   if (team) s = { ...team, jwt }
@@ -1906,7 +1988,7 @@ export async function ZCodeAuthPlugin({ client }) {
           apiKey: s0.key || "zcode", // the fetch below puts the real one on
           async fetch(input, init) {
             const auth = await getAuth()
-            const s = stateOf(auth)
+            const s = await located(stateOf(auth))
             if (!s) throw new Error("not signed in to ZCode")
             let url = input instanceof Request ? input.url : String(input)
             const opts = input instanceof Request ? { method: input.method, headers: input.headers, body: input.body, signal: input.signal, duplex: "half", ...init } : { ...init }
@@ -2048,6 +2130,11 @@ export async function ZCodeAuthPlugin({ client }) {
         const auth = await getAuth()
         const s = stateOf(auth)
         if (!s) return { error: "not signed in", signIn: "kept" }
+        try {
+          await located(s)
+        } catch (e) {
+          return { error: e.message, signIn: "kept" }
+        }
         // every card starts from the plan the sign-in saved, as magpie's
         // built-in did: a reply without a level, a team detail that
         // failed or an error keeps it
@@ -2142,4 +2229,4 @@ export async function ZCodeAuthPlugin({ client }) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT, marked, keyDevice, sessionOf }
+export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf }
