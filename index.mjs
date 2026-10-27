@@ -2006,7 +2006,11 @@ export async function ZCodeAuthPlugin({ client }) {
       id: PROVIDER,
       // the account's plan's models, as ZCode's config lists them now
       async models(provider, { auth } = {}) {
-        const s = stateOf(auth)
+        // a ZCode 3.16 sign-in holds only where its key is: read the key
+        // first, as a request does, or plansOf takes the keyless sign-in
+        // for a Start Plan one and lists that plan's models (#439). A key
+        // that can't be read throws, and magpie keeps the list it had.
+        const s = await located(stateOf(auth))
         if (!s) return provider.models
         const { start, gift: known } = await plansOf(s).catch(() => ({ start: false, gift: null }))
         const gift = start ? await startPlan(s.jwt, s.device).catch(() => null) : known

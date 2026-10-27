@@ -251,3 +251,67 @@ test("ZCode 3.16's key location gives the coding plan its key", async () => {
   // asked at the site's own API, never the record's foreign origin, as a Bearer
   expect(sent[0]).toEqual(["GET", "https://api.z.ai/api/biz/v1/organization/o/projects/p/api_keys/copy/gone", "Bearer tok-z"])
 })
+
+// dinghao-8 (#439): the same ZCode 3.16 sign-in's model list. models() read
+// the sign-in without its key, so plansOf took it for a Start Plan one and
+// listed that plan's models: GLM-5.3, which ZCode's config gives
+// account:bigmodel-individual-coding-plan, was left out and delisted.
+test("ZCode 3.16's key location lists the coding plan's models", async () => {
+  const at = "project-key-location:v1:" + encodeURIComponent(JSON.stringify(["https://bigmodel.cn", "bigmodel", "u7", null, 1, "non-team"]))
+  zcodeHas(
+    {
+      zcodejwttoken: "Bearer j1",
+      "oauth:bigmodel:access_token": "tok-bm",
+      "oauth:bigmodel:user_info": JSON.stringify({ id: "u7", email: "q@example.com" }),
+      [at]: JSON.stringify({ organizationId: "org7", projectId: "proj7", apiKeyId: "k7" }),
+    },
+    { providerFamilyDomain: "bigmodel" },
+  )
+  const rule = (providerId, builtinModelIds) => ({ providerId, builtinModelIds })
+  const cfg = {
+    revision: 9_999_999,
+    config: {
+      providerConfigRules: {
+        providerRules: [
+          rule("account:bigmodel-individual-coding-plan", ["GLM-5.3", "GLM-5.3-Flash", "GLM-5.2", "GLM-5-Turbo"]),
+          rule("account:zai-start-plan", ["GLM-5.3-Flash", "GLM-5.2", "GLM-5-Turbo"]),
+        ],
+      },
+    },
+  }
+  let keyFails = false
+  globalThis.fetch = async (input) => {
+    const url = String(input instanceof Request ? input.url : input)
+    if (url.includes("/api_keys/copy/k7")) return keyFails ? new Response("{}", { status: 500 }) : Response.json({ code: 200, data: { secretKey: "sec7" } })
+    if (url.includes("/api/biz/subscription/list")) return Response.json({ code: 200, data: [{ productName: "GLM Coding Pro", status: "VALID" }] })
+    if (url.includes("/zcode-plan/billing/balance")) return Response.json({ code: 0, data: { plans: [] } })
+    if (url.includes("/api/v1/client/configs")) return Response.json({ code: 0, data: { configs: { builtin_provider_config_json: "https://cdn.example/zcode-builtin.json" } } })
+    if (url === "https://cdn.example/zcode-builtin.json") return Response.json(cfg)
+    return new Response("{}", { status: 404 })
+  }
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  const auth = { ...got, type: "oauth" }
+  expect(JSON.parse(got.refresh).source).toBe("zcode")
+  _internal.routes.clear()
+  const ms = await hooks.provider.models({ models: {} }, { auth })
+  expect(Object.keys(ms)).toContain("GLM-5.3")
+  expect(ms["GLM-5.3"].api.url).toBe("https://open.bigmodel.cn/api/anthropic/v1")
+
+  // a key that can't be read throws, so magpie keeps the list it had
+  // rather than being told the Start Plan's
+  keyFails = true
+  const z = await (await m.authorize()).callback()
+  zcodeHas(
+    {
+      zcodejwttoken: "Bearer j1",
+      "oauth:bigmodel:access_token": "tok-other",
+      "oauth:bigmodel:user_info": JSON.stringify({ id: "u7", email: "q@example.com" }),
+      [at]: JSON.stringify({ organizationId: "org7", projectId: "proj7", apiKeyId: "k7" }),
+    },
+    { providerFamilyDomain: "bigmodel" },
+  )
+  _internal.routes.clear()
+  await expect(hooks.provider.models({ models: {} }, { auth: { ...z, type: "oauth" } })).rejects.toThrow("coding plan key")
+})
