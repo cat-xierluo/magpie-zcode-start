@@ -145,8 +145,10 @@ declares — `maxConcurrency` on the auth hook, and `magpie.maxConcurrency`
 in its `package.json`, both three. A request the vendor refuses anyway
 waits a moment (a quarter of a second, then longer — about ten seconds of
 waits in all) and asks again, the same request byte for byte. A cap that
-outlasts the waits goes on as it came, ZCode's words followed by what it
-is, so magpie can move that request along instead of resting the account.
+outlasts the waits goes on as a 429, ZCode's words followed by what they
+mean, so the agent reads why. magpie still reads it as a rate limit: the
+account rests a minute and the request goes to the next member of its
+routing group, as it did before.
 
 Three is a default, not a cap the plugin enforces. A plan's real cap
 follows its tier — Z.ai serves a Max plan more at once than a Pro, and a
