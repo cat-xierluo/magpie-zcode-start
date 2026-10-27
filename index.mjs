@@ -265,9 +265,11 @@ const giftUsable = (s, gift, m) => !jwtExpired(s.jwt) && giftServes(gift, m) &&
 
 // spentUp is the gift saying it has nothing left to spend: its own no-
 // resource-package code 1113, its "exceed quota limit" 1005 — a spent gift
-// can answer a 200 with a JSON body carrying one of those codes. Every 429
-// counts as spent, Z.ai's 1302/1303 rate limits among them.
+// can answer a 200 with a JSON body carrying one of those codes. Every other
+// 429 counts as spent, Z.ai's 1302/1303 rate limits among them; the plan's
+// own in-flight cap (3008/3009) does not, since it is a turn not yet come.
 function spentUp(text, status) {
+  if (busy(status, text)) return false
   if (status === 429) return true
   let b
   try { b = JSON.parse(text) } catch { return false }
@@ -1516,6 +1518,71 @@ function kept(res, text) {
   return new Response(text !== undefined ? text : res.body, { status: res.status, statusText: res.statusText, headers: h })
 }
 
+// ---- the plan's concurrency ------------------------------------------------------
+// ZCode serves one account a few requests at a time. Past that it answers 429
+// with code 3008, "user concurrency limit exceeded", or 3009, "model
+// concurrency limit exceeded": the request's turn has not come — not a plan
+// spent (1113/1005) and not a rate limit (1302/1303). magpie sends every
+// agent's and every session's requests of this computer through this one
+// process, and its own queue spaces an account's requests by the number
+// declared below (DEFAULT_CONCURRENCY, on the auth hook and in package.json);
+// a request the vendor refuses anyway waits a moment and asks again, the same
+// bytes. A refusal is immediate while a turn's answer is not, so a redundant
+// ask costs a round trip and no tokens.
+//
+// The plugin keeps no gate of its own: a plan's cap depends on its tier (Z.ai
+// serves Max more at once than Pro, and Lite fewer) and is higher off-peak
+// (https://docs.z.ai/devpack/usage-policy), so a number written here would
+// hold a Max account to a Lite one's, with no way for the user to raise it.
+const DEFAULT_CONCURRENCY = 3
+const BUSY_CODES = new Set(["3008", "3009"])
+// BUSY_WAITS are the waits between asks, longest last: about ten seconds of
+// them. Past that the account is saturated rather than busy, and magpie's
+// routing takes the request (or rests the account, as its 429 says).
+const BUSY_WAITS = [250, 500, 900, 1600, 2800, 4000]
+const BUSY_HINT =
+  "ZCode serves one account a few requests at a time, and every agent and session of this computer asks through magpie; this request came behind the others, and the same request a moment later is served"
+
+// busy says a 429 is that in-flight cap: its own code (3008, 3009), or its
+// own words when the envelope carries no code.
+function busy(status, text) {
+  if (status !== 429) return false
+  let b
+  try {
+    b = JSON.parse(text)
+  } catch {
+    return false
+  }
+  if (!b || typeof b !== "object") return false
+  const say = (v) => (v == null || typeof v === "object" ? "" : String(v))
+  if (BUSY_CODES.has(say(b.code) || say(b.error?.code))) return true
+  return /concurrency limit exceeded/i.test(say(b.msg) + " " + say(b.message) + " " + say(b.error?.message) + " " + say(b.error))
+}
+
+// busyAnswer is the vendor's cap refusal as the agent reads it: its words,
+// then what they are and what to do, as noPlanKey says why a key has no plan.
+function busyAnswer(res, text) {
+  const h = new Headers(res.headers)
+  h.set("content-type", "application/json")
+  let v
+  try {
+    v = JSON.parse(text)
+  } catch {}
+  if (v && typeof v === "object") {
+    const said = first(v.msg, v.message, v.error?.message, typeof v.error === "string" ? v.error : "", `${res.status}`)
+    const code = v.code ?? v.error?.code
+    const head = code != null && !said.includes(String(code)) ? `${said} (${res.status}, code ${code})` : said
+    const message = `${head} — ${BUSY_HINT}`
+    const out = v.error && typeof v.error === "object" ? { ...v, error: { ...v.error, message } } : { ...v, msg: message }
+    return new Response(JSON.stringify(out), { status: res.status, statusText: res.statusText, headers: h })
+  }
+  return new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: `${res.status} ${STATUS_TEXT[res.status] ?? res.statusText} — ${BUSY_HINT}`.trim() } }), {
+    status: res.status,
+    statusText: res.statusText,
+    headers: h,
+  })
+}
+
 function model(m, url) {
   const e = entry(m)
   return {
@@ -1979,6 +2046,12 @@ export async function ZCodeAuthPlugin({ client }) {
     },
     auth: {
       provider: PROVIDER,
+      // a plan serves one account a few requests at a time: magpie's own
+      // field, so its queue spaces what the agents ask for before the vendor
+      // sees it. This is a default, not a cap the plugin enforces — a plan's
+      // own cap follows its tier (Max > Pro > Lite) and the time of day, and
+      // a user who knows theirs can raise this on the account
+      maxConcurrency: DEFAULT_CONCURRENCY,
       async loader(getAuth, provider) {
         const s0 = stateOf(await getAuth())
         if (!s0) return {}
@@ -2076,7 +2149,26 @@ export async function ZCodeAuthPlugin({ client }) {
               h.set("x-api-key", key)
               h.set("Authorization", "Bearer " + key)
             }
-            let res = await fetch(url, { ...opts, headers: h })
+            // a refusal that is the account's or the model's own in-flight
+            // cap is asked again a moment later (see the plan's concurrency):
+            // magpie sends every agent's and every session's requests of this
+            // computer through this one process, and its queue spaces them by
+            // the number declared above
+            const ask = () => fetch(url, { ...opts, headers: h })
+            let res = await ask()
+            for (let i = 0; res.status === 429; i++) {
+              const text = await res.text()
+              const cap = busy(429, text)
+              if (!cap || i >= BUSY_WAITS.length) {
+                res = cap
+                  ? busyAnswer(res, text)
+                  : new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+                break
+              }
+              const w = BUSY_WAITS[i]
+              await sleep(Math.round(w * (0.75 + Math.random() * 0.5)))
+              res = await ask()
+            }
             // the Start Plan turning the request away says what to do about
             // it: the account blocked, or the network
             if (start && res.status >= 400) {
@@ -2229,4 +2321,4 @@ export async function ZCodeAuthPlugin({ client }) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf }
+export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY }

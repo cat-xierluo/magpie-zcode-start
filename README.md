@@ -128,9 +128,33 @@ coding plan; when the gift answers a trial entry with a quota error
 "exceed quota limit", which it can answer inside an HTTP 200) that too
 becomes a 429 and keeps the entry off for a minute. Any other gift
 answer (its 405, its 401, its 5xx) goes on as it came: the user picked
-the gift, so the coding plan is not spent behind their back. Every 429
-counts as spent, Z.ai's 1302/1303 rate limits among them. A stream's
-body is never read or buffered on the way.
+the gift, so the coding plan is not spent behind their back. Every other
+429 counts as spent — Z.ai's 1302/1303 rate limits among them — while the
+plan's own in-flight cap (3008/3009) does not: such a request is asked
+again instead (see [A few at once](#a-few-at-once)). A stream's body is
+never read or buffered on the way.
+
+## A few at once
+
+A plan serves one account a few requests at a time; past that, ZCode
+answers 429 with code 3008 "user concurrency limit exceeded", or 3009
+"model concurrency limit exceeded". magpie funnels every agent's and every
+session's requests of one computer through this one plugin process, so
+magpie's own queue spaces an account's requests by the number this plugin
+declares — `maxConcurrency` on the auth hook, and `magpie.maxConcurrency`
+in its `package.json`, both three. A request the vendor refuses anyway
+waits a moment (a quarter of a second, then longer — about ten seconds of
+waits in all) and asks again, the same request byte for byte. A cap that
+outlasts the waits goes on as it came, ZCode's words followed by what it
+is, so magpie can move that request along instead of resting the account.
+
+Three is a default, not a cap the plugin enforces. A plan's real cap
+follows its tier — Z.ai serves a Max plan more at once than a Pro, and a
+Lite fewer — and is higher off-peak
+([Z.ai's usage policy](https://docs.z.ai/devpack/usage-policy)), so a
+number written into the plugin would hold a Max account to a Lite one's
+with no way to raise it. A user who knows their plan's cap sets it on the
+account or the provider in magpie, and magpie's queue follows that.
 
 ## The usage card
 
