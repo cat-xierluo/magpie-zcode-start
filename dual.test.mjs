@@ -63,6 +63,329 @@ async function sendTo(url, body) {
 const MSG = "https://api.z.ai/api/anthropic/v1/messages"
 const body = (model) => JSON.stringify({ model, max_tokens: 100, messages: [{ role: "user", content: "hi" }] })
 
+// freeFirst: a plain model spends the account's live gift first, and falls
+// back to the coding plan when the gift cannot serve it. The -Trial entries
+// keep their own strict semantics; nothing else changes.
+const freePlugin = async (options) => (await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } }, options)).auth
+
+test("free first spends the gift on the plain model while it has quota", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(0)
+  const m = sent.at(-1)
+  expect(m.origin).toBe("https://zcode.z.ai")
+  expect(m.path).toBe("/api/v1/zcode-plan/anthropic/v1/messages")
+  expect(m.headers.authorization).toBe("Bearer " + jwt)
+  expect(m.headers["x-api-key"]).toBeUndefined()
+  expect(JSON.parse(m.body).model).toBe("glm-5.3-flash")
+})
+
+test("free first falls back to the coding plan once the gift is spent", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/billing/balance"] = ok({ ...balance, balances: [{ ...balance.balances[0], remaining_units: 0, used_units: 1000 }] })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  // the balance reads go to zcode.z.ai; no message does
+  expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(0)
+  const m = sent.at(-1)
+  expect(m.origin).toBe("https://api.z.ai")
+  expect(m.headers["x-api-key"]).toBe(KEY)
+  expect(JSON.parse(m.body).model).toBe("GLM-5.3-Flash")
+})
+
+test("free first follows the provider's options, and a blocked model waits on the plan", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin().then((h) => h.loader(async () => coding, { id: "zcode", options: { freeFirst: true } }))
+  const first = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(first.status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
+  expect(JSON.parse(sent.at(-1).body).model).toBe("glm-5.3-flash")
+  // a refusal the gift gave a moment ago (the blocked map) sends the plain
+  // model to the plan until the minute is out
+  _internal.blocked.set(KEY + "\0" + jwt + "\0glm-5.3-flash", Date.now() + 60_000)
+  const second = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(second.status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  expect(JSON.parse(sent.at(-1).body).model).toBe("GLM-5.3-Flash")
+})
+
+test("free first leaves a model the gift does not serve on the coding plan", async () => {
+  planAndBalance()
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.2") })
+  expect(res.status).toBe(200)
+  const m = sent.at(-1)
+  expect(m.origin).toBe("https://api.z.ai")
+  expect(JSON.parse(m.body).model).toBe("GLM-5.2")
+})
+
+test("without freeFirst the plain model goes to the coding plan as before", async () => {
+  planAndBalance()
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: false }).then((h) => h.loader(async () => coding, { id: "zcode", options: {} }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  expect(JSON.parse(sent.at(-1).body).model).toBe("GLM-5.3-Flash")
+})
+
+test("free first with no live gift reads the balance once and stays on the plan", async () => {
+  answers["/api/biz/subscription/list"] = ok([{ productName: "GLM Coding Pro", status: "VALID" }])
+  answers["/api/v1/zcode-plan/billing/balance"] = ok({ server_time: now, plans: [], balances: [] })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  for (let i = 0; i < 3; i++) {
+    const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+    expect(res.status).toBe(200)
+    expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  }
+  expect(sent.filter((c) => c.path.endsWith("/billing/balance"))).toHaveLength(1)
+})
+
+test("free first with a failed balance read stays on the plan", async () => {
+  answers["/api/biz/subscription/list"] = ok([{ productName: "GLM Coding Pro", status: "VALID" }])
+  answers["/api/v1/zcode-plan/billing/balance"] = new Response("", { status: 500 })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  for (let i = 0; i < 3; i++) {
+    const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+    expect(res.status).toBe(200)
+    expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  }
+  expect(sent.filter((c) => c.path.endsWith("/billing/balance"))).toHaveLength(1)
+})
+
+test("free first changes nothing for a gift-only account", async () => {
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const giftOnly = { type: "oauth", access: jwt, refresh: JSON.stringify({ site: "zai", jwt, device: DEVICE }) }
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => giftOnly, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.filter((c) => c.path.endsWith("/billing/balance"))).toHaveLength(0)
+  const m = sent.at(-1)
+  expect(m.origin).toBe("https://zcode.z.ai")
+  expect(JSON.parse(m.body).model).toBe("GLM-5.3-Flash")
+})
+
+test("a gift that answers spent is answered from the plan in the same request", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "Insufficient balance or no resource package", code: 1113 } }), { status: 429, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  const giftTries = sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))
+  expect(giftTries).toHaveLength(1)
+  expect(JSON.parse(giftTries[0].body).model).toBe("glm-5.3-flash")
+  const planTries = sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))
+  expect(planTries).toHaveLength(1)
+  expect(JSON.parse(planTries[0].body).model).toBe("GLM-5.3-Flash")
+  // the next request skips the spent gift and goes straight to the plan
+  await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+})
+
+test("a gift 200 that says the quota is spent is answered from the plan too", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ code: 1005, msg: "exceed quota limit" }), { headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+})
+
+test("after the minute's rest the plan keeps serving, inside the route's ten", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "Insufficient balance or no resource package", code: 1113 } }), { status: 429, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const first = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(first.status).toBe(200)
+  // the minute out, the balance still read live: the gift is tried once
+  // more and answered from the plan again, never a 429 of its own
+  _internal.blocked.set(KEY + "\0" + jwt + "\0glm-5.3-flash", Date.now() - 1)
+  const second = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(second.status).toBe(200)
+  expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(2)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(2)
+})
+
+test("three requests racing a gift that just ran out all get the plan's answer", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "Insufficient balance or no resource package", code: 1113 } }), { status: 429, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const send = () => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  const rs = await Promise.all([send(), send(), send()])
+  expect(rs.map((r) => r.status)).toEqual([200, 200, 200])
+  expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(3)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(3)
+})
+
+test("a -Trial entry keeps its local 429 with freeFirst on", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/billing/balance"] = ok({ ...balance, balances: [{ ...balance.balances[0], remaining_units: 0, used_units: 1000 }] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash-Trial") })
+  expect(res.status).toBe(429)
+  expect(sent.filter((c) => c.path.endsWith("/messages"))).toHaveLength(0)
+})
+
+test("a provider options object without freeFirst leaves the plugin's on", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode", options: { freeFirst: undefined } }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
+})
+
+const giftSaysSpent = () => new Response(JSON.stringify({ error: { message: "Insufficient balance or no resource package", code: 1113 } }), { status: 429, headers: { "content-type": "application/json" } })
+
+test("a replay waits out the plan's own busy cap", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = giftSaysSpent()
+  let planTries = 0
+  answers["/api/anthropic/v1/messages"] = () => {
+    planTries++
+    return planTries === 1
+      ? new Response(JSON.stringify({ error: { code: "3008", message: "concurrency limit exceeded" } }), { status: 429, headers: { "content-type": "application/json" } })
+      : ok({ type: "message", content: [] })
+  }
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(planTries).toBe(2)
+})
+
+test("a gift that fails for any other reason is answered from the plan too", async () => {
+  for (const [status, text] of [[500, "boom"], [401, "token expired or incorrect"], [400, "bad request"]]) {
+    planAndBalance()
+    _internal.blocked.clear()
+    sent.length = 0
+    answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(text, { status })
+    answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+    const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+    const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+    expect(res.status).toBe(200)
+    expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+    expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  }
+})
+
+test("the gift's own busy cap, waited out, is answered from the plan too", async () => {
+  planAndBalance()
+  const waits = _internal.BUSY_WAITS.splice(0)
+  _internal.BUSY_WAITS.push(1)
+  try {
+    answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ code: "3008", msg: "user concurrency limit exceeded" }), { status: 429, headers: { "content-type": "application/json" } })
+    answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+    const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+    const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+    expect(res.status).toBe(200)
+    expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(2)
+    expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+    // a cap is a turn not come, not spent: no minute's rest
+    expect(_internal.blocked.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeUndefined()
+  } finally {
+    _internal.BUSY_WAITS.length = 0
+    _internal.BUSY_WAITS.push(...waits)
+  }
+})
+
+test("a Start Plan block page is answered from the plan too", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "request has been blocked due to unusual activity", code: 3012 } }), { status: 405, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  // the block rests the model a minute, as a spent answer does
+  expect(_internal.blocked.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeGreaterThan(Date.now())
+})
+
+const giftUnreachable = (when = () => true) => {
+  const under = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (when(url)) throw new TypeError("fetch failed")
+    return under(input, init)
+  }
+}
+
+// giftThrowing replaces fetch with one that throws error() on the gift's
+// messages alone — the reads answer as usual — and counts the tries, since
+// a request that throws never reaches the fetch fake that fills sent.
+const giftThrowing = (error) => {
+  const under = globalThis.fetch
+  const tries = { gift: 0, plan: 0 }
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.origin === "https://zcode.z.ai" && url.pathname.endsWith("/messages")) {
+      tries.gift++
+      throw await error()
+    }
+    if (url.origin === "https://api.z.ai" && url.pathname.endsWith("/messages")) tries.plan++
+    return under(input, init)
+  }
+  return tries
+}
+
+test("a gift that cannot be asked at all is answered from the plan", async () => {
+  planAndBalance()
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  giftUnreachable((url) => url.origin === "https://zcode.z.ai" && url.pathname.endsWith("/messages"))
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(200)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  // the route is dropped, so the next request's balance read finds out
+  // whether the host is back
+  expect(_internal.routes.get(KEY + "\0" + jwt)).toBeUndefined()
+  const second = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(second.status).toBe(200)
+  expect(sent.filter((c) => c.path.endsWith("/billing/balance"))).toHaveLength(2)
+})
+
+test("an aborted gift request stays aborted", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const ctl = new AbortController()
+  ctl.abort()
+  const tries = await giftThrowing(() => new DOMException("This operation was aborted", "AbortError"))
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  await expect(opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash"), signal: ctl.signal })).rejects.toThrow()
+  expect(tries.gift).toBe(1)
+  expect(tries.plan).toBe(0)
+})
+
+test("an abort while the gift is in flight stays an abort", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const ctl = new AbortController()
+  // the abort lands while the ask is away: some runtimes surface it as a
+  // plain TypeError, and the signal says the caller meant it
+  const tries = await giftThrowing(() => {
+    ctl.abort()
+    return new TypeError("fetch failed")
+  })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  await expect(opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash"), signal: ctl.signal })).rejects.toThrow()
+  expect(tries.gift).toBe(1)
+  expect(tries.plan).toBe(0)
+})
+
 for (const [name, paid, gift] of [
   ["a full paid week leaves an available gift usable", 100, 25],
   ["a spent gift leaves the paid plan usable", 20, 100],

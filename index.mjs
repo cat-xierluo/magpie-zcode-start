@@ -1731,6 +1731,28 @@ function busyAnswer(res, text) {
   })
 }
 
+// askBusy asks once and, when the answer is the vendor's in-flight cap
+// (3008/3009, or its own words), asks again through BUSY_WAITS's waits, a
+// quarter of a second and longer — about ten seconds of them. Past that the
+// account is saturated rather than busy, and the cap goes back as
+// busyAnswer's 429. The plan path's patience, shared with free first's
+// replay, whose plan has a cap of its own.
+async function askBusy(u, o, hs) {
+  let res = await fetch(u, { ...o, headers: hs })
+  for (let i = 0; res.status === 429; i++) {
+    const text = await res.text()
+    const cap = busy(429, text)
+    if (!cap || i >= BUSY_WAITS.length) {
+      res = cap ? busyAnswer(res, text) : new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+      break
+    }
+    const w = BUSY_WAITS[i]
+    await sleep(Math.round(w * (0.75 + Math.random() * 0.5)))
+    res = await fetch(u, { ...o, headers: hs })
+  }
+  return res
+}
+
 function model(m, url) {
   const e = entry(m)
   return {
@@ -2119,12 +2141,17 @@ function sessionOf(id, device) {
 
 // ---- the plugin ------------------------------------------------------------------
 
-export async function ZCodeAuthPlugin({ client }) {
+export async function ZCodeAuthPlugin({ client }, options = {}) {
   const log = (message) => {
     try {
       client?.app?.log?.({ body: { service: "zcode-auth", level: "error", message } })
     } catch {}
   }
+  // freeFirst reads the option from the provider config's options first,
+  // and from the plugin's own (magpie's Plugins › Options) when the
+  // provider carries no freeFirst of its own.
+  const freeFirst = (providerOptions) =>
+    providerOptions?.freeFirst !== undefined ? providerOptions.freeFirst === true : options?.freeFirst === true
   const oauth = (site) => ({
     type: "oauth",
     label: `ZCode: ${SITES[site].name}${site === "bigmodel" ? " (智谱)" : ""} GLM Coding Plan`,
@@ -2230,7 +2257,8 @@ export async function ZCodeAuthPlugin({ client }) {
             // a dual account's body is read ahead of sending, so a gift that
             // says it is spent can spend nothing and replay what was asked for
             let start = alone
-            let orig, forcedGift = false
+            let orig, forcedGift = false, freeGift = false
+            let asked = ""
             let renamed = false
             const done = (res) => (renamed ? searchNamed(res) : res)
             if (opts.body != null) {
@@ -2244,6 +2272,7 @@ export async function ZCodeAuthPlugin({ client }) {
                 renamed = true
               }
               let m = modelOf(orig)
+              asked = m
               if (m.toLowerCase().endsWith("-trial")) {
                 gift ??= await startPlan(s.jwt, s.device).catch(() => null)
                 const raw = giftModel(gift, m)
@@ -2255,8 +2284,21 @@ export async function ZCodeAuthPlugin({ client }) {
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
                 m = raw
                 forcedGift = true
+              } else if (!alone && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m)) {
+                // free first: the plain model spends the account's own live
+                // gift before it spends the coding plan, under the name the
+                // gift lists. The gift is the route's cache alone (a failed
+                // read cached its why), so a gift that cannot be read keeps
+                // the request on the plan with no read per request; a
+                // gift-only account is already on the gift and is left as
+                // it was. A refusal past this check is replayed on the plan
+                // in the same request (replayOnPlan below).
+                const raw = giftNames(known).find((x) => x.toLowerCase() === m.toLowerCase())
+                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: raw })
+                m = raw
+                freeGift = true
               }
-              start = alone || forcedGift
+              start = alone || forcedGift || freeGift
             }
             const swap = (base) => {
               for (const b of [START_BASE, ZAI_BASE, BIGMODEL_BASE]) {
@@ -2267,8 +2309,41 @@ export async function ZCodeAuthPlugin({ client }) {
               }
             }
             let h = new Headers(opts.headers)
+            const askedUrl = url
             const place = workPlace(h)
             const sid = sessionOf(h.get("x-session-id"), s.device)
+            // restModel is the gift saying this model has nothing left: the
+            // model rests a minute (blocked) and the route is dropped, so
+            // the requests behind it re-read the balance and go straight to
+            // the plan.
+            const restModel = () => {
+              for (const [k, until] of blocked) if (Date.now() >= until) blocked.delete(k)
+              blocked.set(s.key + "\0" + s.jwt + "\0" + asked.toLowerCase(), Date.now() + 60_000)
+              routes.delete(s.key + "\0" + s.jwt)
+            }
+            // replayOnPlan is free first's answer to a gift that refused
+            // what its own balance read had promised: the model as the
+            // agent sent it, the plan's headers, the plan's own patience
+            // (askBusy).
+            const replayOnPlan = async () => {
+              let u = askedUrl
+              for (const b of [START_BASE, ZAI_BASE, BIGMODEL_BASE]) {
+                if (u.startsWith(b)) {
+                  u = s.base + u.slice(b.length)
+                  break
+                }
+              }
+              const h2 = new Headers(opts.headers)
+              workPlace(h2)
+              h2.set("x-session-id", sid)
+              h2.delete("authorization")
+              h2.set("x-api-key", key)
+              h2.set("Authorization", "Bearer " + key)
+              h2.delete("content-length")
+              opts.body = marked(JSON.stringify({ ...JSON.parse(orig), model: asked }), s.device, sid)
+              delete opts.duplex
+              return askBusy(u, opts, h2)
+            }
             if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
@@ -2306,20 +2381,18 @@ export async function ZCodeAuthPlugin({ client }) {
             // magpie sends every agent's and every session's requests of this
             // computer through this one process, and its queue spaces them by
             // the number declared above
-            const ask = () => fetch(url, { ...opts, headers: h })
-            let res = await ask()
-            for (let i = 0; res.status === 429; i++) {
-              const text = await res.text()
-              const cap = busy(429, text)
-              if (!cap || i >= BUSY_WAITS.length) {
-                res = cap
-                  ? busyAnswer(res, text)
-                  : new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
-                break
-              }
-              const w = BUSY_WAITS[i]
-              await sleep(Math.round(w * (0.75 + Math.random() * 0.5)))
-              res = await ask()
+            let res
+            try {
+              res = await askBusy(url, opts, h)
+            } catch (e) {
+              // free first moved the request onto the gift, so a gift that
+              // cannot be asked at all — the network, the host — is answered
+              // from the plan; the route read is dropped, so the next
+              // request learns whether the host is back. A caller's abort
+              // stays an abort.
+              if (!freeGift || opts.signal?.aborted || e?.name === "AbortError") throw e
+              routes.delete(s.key + "\0" + s.jwt)
+              res = await replayOnPlan()
             }
             // the Start Plan turning the request away says what to do about
             // it: the account blocked, or the network
@@ -2329,6 +2402,10 @@ export async function ZCodeAuthPlugin({ client }) {
                 // a key account sent to the Start Plan (its plan list read
                 // none) reads its plans again on the next request, so a
                 // coding plan that is there after all is used (#369)
+                if (freeGift) {
+                  restModel()
+                  return done(kept(await replayOnPlan()))
+                }
                 if (s.key && !forcedGift) routes.delete(s.key + "\0" + s.jwt)
                 return kept(startBlocked(res, text))
               }
@@ -2359,6 +2436,32 @@ export async function ZCodeAuthPlugin({ client }) {
                   blocked.set(s.key + "\0" + s.jwt + "\0" + modelOf(orig).toLowerCase(), Date.now() + 60_000)
                 }
                 return spent && res.status < 400 ? kept(new Response(text, { status: 429, headers: res.headers })) : done(kept(res, text))
+              }
+            }
+            // free first's gift answer: the choice was the plugin's, so the
+            // plan answers what the gift would fail — a spent bucket and a
+            // refusal like any other 4xx or 5xx among them, the gift's own
+            // waited-out busy cap included, since the plan's cap is its own.
+            // A spent answer or a block page rests the model a minute and
+            // drops the route read; a 401/403 drops the read alone, so the
+            // next request learns whether the session is gone. Anything
+            // else — a 200 carrying the answer — goes on as it came. A
+            // stream's body is never read here.
+            else if (start && freeGift) {
+              const json = (res.headers.get("content-type") ?? "").includes("application/json")
+              if (res.status >= 400 || json) {
+                const text = await res.text()
+                const cap = busy(res.status, text)
+                const spent = !cap && spentUp(text, res.status)
+                if (spent) {
+                  restModel()
+                  return done(kept(await replayOnPlan()))
+                }
+                if (res.status >= 400) {
+                  if (!cap && (res.status === 401 || res.status === 403)) routes.delete(s.key + "\0" + s.jwt)
+                  return done(kept(await replayOnPlan()))
+                }
+                return done(kept(res, text))
               }
             }
             // the plan's answer goes on as it came, the account kept: the
