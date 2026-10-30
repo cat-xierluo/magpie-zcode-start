@@ -800,7 +800,7 @@ async function startUsage(s) {
   return g
 }
 
-// byPlan names a bucket after its plan ("ZCode 1024 Dev Day · GLM-5.3")
+// byPlan names a bucket after its plan ("GLM-5.3 · ZCode 1024 Dev Day")
 // when the gift's buckets come from more than one plan: two plans each
 // give a GLM-5.3, and named alike a spent one and a live one can't be
 // told apart (01huadalang, Discord: the new-user plan's spent GLM-5.3
@@ -808,7 +808,7 @@ async function startUsage(s) {
 // their own names, as the card's header names the plan.
 function byPlan(windows) {
   const several = new Set(windows.map((w) => w._plan || "")).size > 1
-  return (name, plan) => (several && plan ? plan + " · " + name : name)
+  return (name, plan) => (several && plan ? name + " · " + plan : name)
 }
 
 // countedFirst puts the buckets a request spends before those set aside
@@ -869,9 +869,13 @@ async function dualUsage(s, out) {
       // Several buckets may serve one model: one spent sibling cannot block it.
       const best = bestBuckets(g.windows)
       // beside the Coding Plan's windows every gift bucket is named after
-      // its plan, one plan or several: "Start Plan · GLM-5.1-Trial" can't
-      // be read as the Coding Plan's own (windy, Discord)
-      const label = (name, plan) => first(plan, "Start Plan") + " · " + name
+      // its plan, one plan or several: "GLM-5.1-Trial · Start Plan" can't
+      // be read as the Coding Plan's own (windy, Discord). The bucket's
+      // own name (ZCode's show_name, as its "Today's balance" lists it)
+      // comes first: magpie's ring and account row cut a long name short,
+      // and "ZCODE GLOBAL BUI…" said neither the model nor the plan's
+      // kind, so the Start Plan read as missing (Danbuth, plugins#504)
+      const label = (name, plan) => name + " · " + first(plan, "Start Plan")
       out.windows.push(...countedFirst(g.windows.map(({ _plan: p, _spent, ...w }, i) => {
         const selected = gift.allModels.filter((m) => best.get(m.toLowerCase()) === i)
         const models = selected.map(giftID)

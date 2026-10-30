@@ -208,7 +208,7 @@ test("a gift-only account's spent Start Plan bucket doesn't hold up a model its 
   }
   expect(counting("GLM-5.3")[0].used).toBe(0)
   // the spent bucket is still on the card, as ZCode shows it
-  expect(u.windows.find((w) => w.used === 100)).toMatchObject({ name: "ZCode Start Plan · GLM-5.3-Flash", aside: true })
+  expect(u.windows.find((w) => w.used === 100)).toMatchObject({ name: "GLM-5.3-Flash · ZCode Start Plan", aside: true })
   expect(u.windows).toHaveLength(3)
 })
 
@@ -273,13 +273,13 @@ test("two gift plans' GLM-5.3 each show, named by plan, the live one first (01hu
   const names = u.windows.map((w) => w.name)
   expect(new Set(names).size).toBe(names.length)
   // the 1024 plan's GLM-5.3 shows its own amount left, and counts the model
-  expect(u.windows.find((w) => w.name === "ZCode 1024 Dev Day · GLM-5.3")).toMatchObject({ used: 25, amount: 50_000_000, limit: 200_000_000, models: ["glm-5.3", "GLM-5.3-Trial"] })
-  expect(u.windows.find((w) => w.name === "ZCode 1024 Dev Day · GLM-5.3").aside).toBeUndefined()
+  expect(u.windows.find((w) => w.name === "GLM-5.3 · ZCode 1024 Dev Day")).toMatchObject({ used: 25, amount: 50_000_000, limit: 200_000_000, models: ["glm-5.3", "GLM-5.3-Trial"] })
+  expect(u.windows.find((w) => w.name === "GLM-5.3 · ZCode 1024 Dev Day").aside).toBeUndefined()
   // the spent new-user plan's GLM-5.3 still shows, used up, set aside
-  expect(u.windows.find((w) => w.name === "ZCode Start Plan · GLM-5.3")).toMatchObject({ used: 100, amount: 3_000_000, aside: true })
+  expect(u.windows.find((w) => w.name === "GLM-5.3 · ZCode Start Plan")).toMatchObject({ used: 100, amount: 3_000_000, aside: true })
   // magpie's account row shows a card's first two windows: what is spent now
   expect(u.windows.slice(0, 2).every((w) => !w.aside)).toBe(true)
-  expect(u.windows.slice(0, 2).some((w) => w.name === "ZCode 1024 Dev Day · GLM-5.3")).toBe(true)
+  expect(u.windows.slice(0, 2).some((w) => w.name === "GLM-5.3 · ZCode 1024 Dev Day")).toBe(true)
 })
 
 test("a coding plan account's two gift plans' GLM-5.3 each show, named by plan", async () => {
@@ -287,10 +287,10 @@ test("a coding plan account's two gift plans' GLM-5.3 each show, named by plan",
   const u = await (await hooks()).auth.usage(async () => auth, { id: "zcode" })
   const gift = u.windows.slice(1)
   expect(gift.map((w) => w.name)).toEqual([
-    "ZCode Start Plan · GLM-5.3-Flash-Trial",
-    "ZCode 1024 Dev Day · GLM-5.3-Trial",
-    "ZCode Start Plan · GLM-5.3",
-    "ZCode 1024 Dev Day · GLM-5.3-Flash",
+    "GLM-5.3-Flash-Trial · ZCode Start Plan",
+    "GLM-5.3-Trial · ZCode 1024 Dev Day",
+    "GLM-5.3 · ZCode Start Plan",
+    "GLM-5.3-Flash · ZCode 1024 Dev Day",
   ])
   expect(gift[1]).toMatchObject({ used: 25, models: ["GLM-5.3-Trial"] })
   expect(gift[2]).toMatchObject({ used: 100, aside: true })
@@ -354,4 +354,32 @@ test("a coding plan with no live ZCode session says its gift plans need ZCode's 
   const live = await h.auth.usage(async () => auth, { id: "zcode" })
   expect(line(live)).toBeUndefined()
   expect(live.windows.some((w) => w.name.includes("-Trial") || (w.models ?? []).some((m) => m.endsWith("-Trial")))).toBe(true)
+})
+
+// Danbuth (plugins#504): a GLM Coding Max account that claimed ZCode's
+// Start Plan (plan_id zcode-v3-start-plan-1029, named "ZCODE GLOBAL
+// BUILD") found no Start Plan on the card. It was there, as the third
+// window, but magpie's ring and account row cut a long name short and
+// "ZCODE GLOBAL BUI…" named neither the model nor the plan's kind. The
+// Coding windows are a real /quota/limit reply (the owner's account, 10-30);
+// the plan row is the real /billing/balance plan kongbai01203 read in
+// #503, its times moved to now; its buckets have the shape of ganlerk's
+// Start Plan balance (no balance of this plan was read). ZCode's own
+// "Today's balance" lists a bucket by its show_name, so the window's name
+// starts with it and the plan follows.
+test("a coding plan account's ZCODE GLOBAL BUILD gift is named by its model first (Danbuth, #504)", async () => {
+  const limit = { limits: [{ type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 2000, currentValue: 0, remaining: 2000, percentage: 0 }, { type: "CREDIT_LIMIT", unit: 6, number: 1, usage: 10000, currentValue: 68, remaining: 9931, percentage: 1, nextResetTime: (now + 86400) * 1000 }], level: "lite" }
+  const mocked = globalThis.fetch
+  globalThis.fetch = async (input, init) => new URL(String(input)).pathname === "/api/monitor/usage/quota/limit"
+    ? new Response(JSON.stringify({ code: 200, msg: "Operation successful", data: limit, success: true }), { headers: { "content-type": "application/json" } })
+    : mocked(input, init)
+  balance.plans = [{ plan_id: "zcode-v3-start-plan-1029", name: "ZCODE GLOBAL BUILD", status: "active", starts_at: now - 45440, ends_at: now + 3737 }]
+  balance.balances = [
+    { plan_id: "zcode-v3-start-plan-1029", show_name: "GLM-5.3", capabilities: ["model:GLM-5.3"], total_units: 3_000_000, used_units: 450_000, remaining_units: 2_550_000 },
+    { plan_id: "zcode-v3-start-plan-1029", show_name: "GLM-5.3-Flash", capabilities: ["model:GLM-5.3-Flash"], total_units: 5_000_000, used_units: 0, remaining_units: 5_000_000 },
+  ]
+  const u = await (await hooks()).auth.usage(async () => auth, { id: "zcode" })
+  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "Weekly", "GLM-5.3-Trial · ZCODE GLOBAL BUILD", "GLM-5.3-Flash-Trial · ZCODE GLOBAL BUILD"])
+  expect(u.windows[2]).toMatchObject({ used: 15, amount: 450_000, limit: 3_000_000, models: ["GLM-5.3-Trial"] })
+  expect(u.windows[3]).toMatchObject({ used: 0, limit: 5_000_000, models: ["GLM-5.3-Flash-Trial"] })
 })

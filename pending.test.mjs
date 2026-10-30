@@ -90,7 +90,7 @@ for (const status of ["active", "pending_unknown_word"]) {
 test("beside the Coding Plan, a live gift's buckets carry their plan's name, and the next plan its start", async () => {
   zcode({ plans: [live, next("active")], balances: [bucket("up1", 400), bucket("up2", 1000)] }, true)
   const u = await usage(codingAuth())
-  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "Start Plan · GLM-5.1-Trial", PENDING])
+  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "GLM-5.1-Trial · Start Plan", PENDING])
   // the live plan's bucket is the one counted; the coming plan's full one isn't
   expect(u.windows[1]).toMatchObject({ used: 60, display: "600 / 1000", models: ["GLM-5.1-Trial"] })
   expect(u.windows[2]).toEqual({ name: PENDING, used: 0, aside: true, display: `Start Plan · ${local(later)}` })

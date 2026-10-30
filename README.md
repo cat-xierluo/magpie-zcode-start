@@ -166,9 +166,12 @@ and end. The card's plan and term stay the coding plan's. A gift read
 that fails leaves just the coding card — magpie hides a card's windows
 behind an error, so a gift hiccup must not black out a working Coding
 Plan. A gift that goes out of date while requests use it simply stops
-showing. Beside the coding plan's windows each gift bucket is named
-after its plan ("Start Plan · GLM-5.1-Trial"), one plan or several, so
-the two allowances can't be read as one.
+showing. Beside the coding plan's windows each gift bucket is named by
+its model first, as ZCode's own "Today's balance" lists it, then by its
+plan ("GLM-5.1-Trial · Start Plan"), one plan or several, so the two
+allowances can't be read as one. The model comes first because magpie's
+ring and account row cut a long name short: "ZCODE GLOBAL BUI…" (the
+Start Plan claimed on 10-29) said neither (#504).
 
 **Gift plans that start later.** A plan on the balance whose `starts_at`
 is still to come (a Start Plan taking effect at 23:00 today) serves
