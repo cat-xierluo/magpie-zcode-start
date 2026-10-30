@@ -46,6 +46,9 @@ async function checkin(auth = SIGNED_IN) {
 
 // #503: the preview of an account with nothing to claim
 const PREVIEW_NONE = '{"code":0,"msg":"","data":{"plans":[],"server_time":1793318263}}'
+// 10-30 (the owner's account, read for hykql's report on Discord): the
+// preview of an account with nothing to claim carries no data at all
+const PREVIEW_NO_DATA = '{"code":0,"msg":"","logid":"202610300535585c4e3de75769b684da87"}'
 // usage.test.mjs's real preview, the day's ZCode Trust Build unclaimed
 const PREVIEW_ONE = {
   code: 0, msg: "",
@@ -143,11 +146,20 @@ test("a claim that doesn't read is failed (unknown), never claimed", async () =>
   }
 })
 
+test("a preview with nothing in it is nothing to claim, not a failed check-in", async () => {
+  for (const body of [PREVIEW_NO_DATA, '{"code":0,"msg":"","data":null}', '{"code":0,"msg":"","data":{"server_time":1793318263}}', '{"code":0,"msg":"","data":{"plans":null}}']) {
+    const calls = serve(({ url }) => (url.pathname === PREVIEW ? json(body) : json(CLAIMED_NOW)))
+    expect(await checkin()).toEqual({ outcome: "inactive", message: "no ZCode gift plan to claim" })
+    expect(claims(calls)).toEqual([])
+  }
+})
+
 test("a preview that doesn't read is failed (unknown), and nothing is claimed", async () => {
   for (const answer of [
     () => json("", 500),
     () => json("garbled"),
-    () => json('{"code":0,"data":{}}'), // no plan list
+    () => json('{"code":0,"data":{"plans":"zcode-v3-start-plan-1029"}}'), // a plan list that isn't a list
+    () => json('{"code":0,"data":"plans"}'), // data that isn't an object
     () => json('{"code":401,"msg":"token invalid"}', 401),
     () => { throw new Error("no network in tests") },
   ]) {

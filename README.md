@@ -216,7 +216,8 @@ reads the app's preview list and posts each plan it lists to
 account's ZCode session, as the app does. The answer is judged by the
 body's code, not the HTTP status:
 
-- nothing listed: *inactive*;
+- nothing listed: *inactive* (ZCode answers an account with nothing to
+  claim `{"code":0,"msg":""}`, with no list at all);
 - code 0: *claimed* (the next request uses the plan);
 - code 1003 "target already exists" (HTTP 200): *done*, claimed before;
 - code 3007 "captcha verify failed": *captcha*, the plan is claimed in

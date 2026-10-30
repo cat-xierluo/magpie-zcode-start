@@ -663,7 +663,7 @@ async function claimHint(s) {
   } catch {
     return null
   }
-  const plans = (Array.isArray(d?.plans) ? d.plans : []).filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim())
+  const plans = (previewPlans(d) ?? []).filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim())
   if (!plans.length) return null
   const n = plans.length
   const plan = first(...plans.map((p) => (typeof p?.name === "string" ? p.name : "")), "ZCode gift plan")
@@ -718,6 +718,20 @@ async function claimOne(s, planID) {
   return { outcome: "failed", why: `${msg || "error"} (HTTP ${res.status}, code ${code})` }
 }
 
+// previewPlans is /billing/preview's plan list. An account with nothing to
+// claim is answered {"code":0,"msg":"","logid":…}: no data at all, not
+// "plans": [] (the owner's account read 10-30 for hykql's report on
+// Discord; the list is left out when it is empty). call has already judged the code, so a reply
+// without data, or data without plans, is a list of none. Only data that
+// isn't an object, or plans that are there and aren't a list, don't read
+// (null, unknown).
+function previewPlans(d) {
+  if (d == null) return []
+  if (typeof d !== "object" || Array.isArray(d)) return null
+  if (d.plans == null) return []
+  return Array.isArray(d.plans) ? d.plans : null
+}
+
 // claimDaily claims every gift plan ZCode's preview lists for the account
 // (#503), as auth.checkin's answer: inactive when it lists none, claimed
 // when one was claimed now, done when each was claimed before, captcha
@@ -734,8 +748,9 @@ async function claimDaily(s) {
   } catch (e) {
     return { outcome: "failed", message: `gift plans to claim: ${e?.message ?? String(e)}` }
   }
-  if (!Array.isArray(d?.plans)) return { outcome: "failed", message: "gift plans to claim: no plan list in the reply" }
-  const plans = d.plans.filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim())
+  const listed = previewPlans(d)
+  if (!listed) return { outcome: "failed", message: "gift plans to claim: the plan list doesn't read" }
+  const plans = listed.filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim())
   if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim" }
   const got = []
   for (const p of plans) {
