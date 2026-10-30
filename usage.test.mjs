@@ -361,7 +361,7 @@ test("a model ZCode's config gives no limits has none made up", () => {
 // hold is named on the card, to be claimed in the ZCode app (the claim needs
 // the app's captcha attestation, see claimHint). Both fixtures are real
 // responses: one account's preview while the day's ZCode Trust Build was
-// still unclaimed, and one after it had claimed it. The plugin never asks
+// still unclaimed, and one after it had claimed it. Reading the card never asks
 // the claim endpoint. The window's name is the fixed sentence magpie
 // translates; the count and the plan's own name are the display.
 const PREVIEW_CLAIMABLE = {

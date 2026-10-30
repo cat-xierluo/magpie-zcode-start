@@ -644,10 +644,10 @@ async function giftOf(s) {
 const CLAIM_HINT = "Gift plans to claim in the ZCode app"
 
 // claimHint is the card's line for gift plans ZCode is holding for the
-// account but has not put on it: GET /billing/preview lists them, and
-// only the ZCode app claims one — its claim takes the Aliyun captcha
-// attestation the app's own renderer makes, so the plugin reads the list
-// and asks the user to claim it there. A window, set aside (it is no
+// account but has not put on it: GET /billing/preview lists them. The
+// card only names them: they are claimed in the ZCode app, or by the
+// daily claim (claimDaily) when the user turned it on; on 10-06 a claim
+// without the app's Aliyun captcha attestation was refused (3007). A window, set aside (it is no
 // allowance: using it up stops nothing), so the card shows it and
 // routing, caps and the menu bar pass it over. The window's name is a
 // fixed sentence, so magpie can translate it (a display is shown as it
@@ -668,6 +668,93 @@ async function claimHint(s) {
   const n = plans.length
   const plan = first(...plans.map((p) => (typeof p?.name === "string" ? p.name : "")), "ZCode gift plan")
   return { name: CLAIM_HINT, used: 0, aside: true, display: `${n} · ${plan}` }
+}
+
+// ---- the daily claim ---------------------------------------------------------------
+
+// CLAIMED_ALREADY is /billing/claim's body code for a plan the account
+// has claimed before: HTTP 200 {"code":1003,"msg":"target already
+// exists"} (magpie-community/plugins#503, a real reply), the desktop
+// app's manualClaimPlan.claim.failure.alreadyClaimed. CAPTCHA is its
+// answer to a claim without the Aliyun captcha attestation the ZCode app's
+// renderer makes: HTTP 400 {"code":3007,"msg":"captcha verify failed"}
+// (seen 10-06, #30).
+const CLAIMED_ALREADY = 1003
+const CAPTCHA = 3007
+const CAPTCHA_WORDS = /captcha/i
+
+// zcodeHeaders are what the ZCode app sends on its billing calls beside
+// the session (#503's capture): its version and platform.
+const zcodeHeaders = () => ({ "X-ZCode-App-Version": APP_VERSION, "X-Platform": platform() })
+
+// claimOne asks /billing/claim for one plan and says what its body says:
+// "claimed" (code 0), "done" (code 1003, claimed before), "captcha" (the
+// claim wants the app's captcha), else "failed" with why. Only a body
+// that reads decides: an HTTP error without one, or text that isn't
+// JSON, is failed (unknown), never claimed. The code 0 body hasn't been
+// seen yet, so nothing but its code is read.
+async function claimOne(s, planID) {
+  let res, text
+  try {
+    res = await fetch(`${ZCODE}/api/v1/zcode-plan/billing/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": UA, Authorization: "Bearer " + s.jwt, "X-Device-Mid": s.device || anyDevice, ...zcodeHeaders() },
+      body: JSON.stringify({ plan_id: planID }),
+    })
+    text = await res.text()
+  } catch (e) {
+    return { outcome: "failed", why: e?.message ?? String(e) }
+  }
+  let env
+  try {
+    env = JSON.parse(text)
+  } catch {}
+  const code = env && typeof env === "object" && env.code != null && String(env.code).trim() !== "" ? Number(env.code) : NaN
+  const msg = typeof env?.msg === "string" ? env.msg : ""
+  if (code === CAPTCHA || CAPTCHA_WORDS.test(msg)) return { outcome: "captcha", why: msg || `code ${code}` }
+  if (code === CLAIMED_ALREADY) return { outcome: "done" }
+  if (code === 0 && res.ok) return { outcome: "claimed" }
+  if (!Number.isFinite(code)) return { outcome: "failed", why: `HTTP ${res.status}, unreadable reply ${String(text ?? "").trim().slice(0, 120) || "(empty)"}` }
+  return { outcome: "failed", why: `${msg || "error"} (HTTP ${res.status}, code ${code})` }
+}
+
+// claimDaily claims every gift plan ZCode's preview lists for the account
+// (#503), as auth.checkin's answer: inactive when it lists none, claimed
+// when one was claimed now, done when each was claimed before, captcha
+// when ZCode wants the app's captcha for one (it is claimed in the ZCode
+// app), failed when the list or a claim can't be read. A failed one is
+// asked again later in the day, when a plan claimed now answers 1003.
+// Nothing here marks the account: a failed claim keeps its sign-in.
+async function claimDaily(s) {
+  if (!s?.jwt) return { outcome: "ineligible", message: "ZCode's gift plans are claimed with a ZCode sign-in; this account has none" }
+  if (jwtExpired(s.jwt)) return { outcome: "failed", message: EXPIRED }
+  let d
+  try {
+    d = await call("GET", `${ZCODE}/api/v1/zcode-plan/billing/preview?app_version=${APP_VERSION}&platform=${platform()}`, { auth: "Bearer " + s.jwt, device: s.device, headers: zcodeHeaders() })
+  } catch (e) {
+    return { outcome: "failed", message: `gift plans to claim: ${e?.message ?? String(e)}` }
+  }
+  if (!Array.isArray(d?.plans)) return { outcome: "failed", message: "gift plans to claim: no plan list in the reply" }
+  const plans = d.plans.filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim())
+  if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim" }
+  const got = []
+  for (const p of plans) {
+    const name = first(typeof p.name === "string" ? p.name : "", p.plan_id)
+    got.push({ name, ...(await claimOne(s, p.plan_id.trim())) })
+  }
+  const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
+  const claimed = named("claimed")
+  const said = [
+    claimed.length ? `claimed ${claimed.join(", ")}` : "",
+    ...got.filter((g) => g.outcome === "captcha").map((g) => `${g.name}: claim it in the ZCode app (${g.why})`),
+    ...got.filter((g) => g.outcome === "failed").map((g) => `${g.name}: ${g.why}`),
+  ].filter(Boolean).join("; ")
+  // a plan claimed now is used by the next request, not ten minutes on
+  if (claimed.length) routes.delete(s.key + "\0" + s.jwt)
+  if (got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
+  if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }
+  if (claimed.length) return { outcome: "claimed", message: said }
+  return { outcome: "done", message: `already claimed: ${named("done").join(", ")}` }
 }
 
 // GIFT_SIGN_IN is the card's line for an account whose gift plans can't
@@ -2321,6 +2408,17 @@ export async function ZCodeAuthPlugin({ client }) {
           return saved({ error: e?.message ?? String(e) })
         }
       },
+      // the daily claim of ZCode's gift plans (#503): magpie runs it once a
+      // day per account while Settings' Daily check-in has ZCode on (off
+      // until the user turns it on), and its Check in now button asks
+      // right away. See claimDaily.
+      async checkin(getAuth) {
+        try {
+          return await claimDaily(stateOf(await getAuth()))
+        } catch (e) {
+          return { outcome: "failed", message: e?.message ?? String(e) }
+        }
+      },
       methods: [
         oauth("zai"),
         oauth("bigmodel"),
@@ -2367,4 +2465,4 @@ export async function ZCodeAuthPlugin({ client }) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY }
+export const _internal = { config, entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY }

@@ -197,11 +197,35 @@ the card and names them there — the window is named "Gift plans to
 claim in the ZCode app" and the display shows "1 · ZCode Trust Build"
 — set aside, so the line stops nothing and routing, usage caps and the
 menu bar pass it over. The name is a fixed sentence magpie can
-translate; the count and the plan's own name are the display. The plugin never claims one: the claim needs the
-Aliyun captcha attestation only the app's renderer can make. A preview
-that fails, or lists nothing, adds no line at all, and a card that is an
-error keeps its error. Claim the plan in the ZCode app (open it once);
+translate; the count and the plan's own name are the display. Reading
+the card never claims one. A preview that fails, or lists nothing, adds
+no line at all, and a card that is an error keeps its error. Claim the
+plan in the ZCode app (open it once), or let the daily claim below do it;
 the next read shows it as an ordinary gift bucket.
+
+## The daily claim
+
+With ZCode turned on in magpie's Settings → Daily check-in (it is off
+until you turn it on), magpie has the plugin claim each account's gift
+plans once a day (`auth.checkin`; `magpie accounts checkin` asks now). It
+reads the app's preview list and posts each plan it lists to
+`POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
+account's ZCode session, as the app does. The answer is judged by the
+body's code, not the HTTP status:
+
+- nothing listed: *inactive*;
+- code 0: *claimed* (the next request uses the plan);
+- code 1003 "target already exists" (HTTP 200): *done*, claimed before;
+- code 3007 "captcha verify failed": *captcha*, the plan is claimed in
+  the ZCode app (on 10-06 ZCode wanted the app's Aliyun captcha for a
+  claim; whether it still does for a fresh plan is not known yet);
+- anything else, an HTTP error without a code, or a reply that isn't
+  JSON: *failed*, which magpie asks again later that day. It is never
+  taken as claimed, and a failed claim leaves the account's sign-in
+  alone.
+
+An account added with a GLM Coding Plan key has no ZCode session to claim
+with (*ineligible*).
 
 **No ZCode session.** A card read with a key, or with a sign-in whose
 ZCode session has run out (it can't be renewed), sets aside a line named
