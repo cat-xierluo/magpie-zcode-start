@@ -13,7 +13,7 @@ beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((p) => homedir().startsWith(p))) {
     throw new Error("run with an isolated HOME under the temporary directory")
   }
-  ;({ ZCodeAuthPlugin, ZCodeStartAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, ZCodeStartAuthPlugin, _internal } = await import("./zcode-core.mjs"))
 })
 
 beforeEach(() => {

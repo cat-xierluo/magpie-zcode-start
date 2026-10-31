@@ -10,7 +10,7 @@ let ZCodeAuthPlugin
 const fetched = globalThis.fetch
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin } = await import("./zcode-core.mjs"))
 })
 afterAll(() => {
   globalThis.fetch = fetched

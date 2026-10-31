@@ -10,7 +10,7 @@ beforeAll(async () => {
   // Bun reads HOME once, at start: run as HOME=$(mktemp -d) bun test, so
   // no real sign-in is ever read
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal } = await import("./zcode-core.mjs"))
 })
 // nothing leaves the machine; the fetch this file found is put back when
 // it is done, so the next test file (bun runs them all in one process)

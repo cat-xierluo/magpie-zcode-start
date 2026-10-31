@@ -10,7 +10,7 @@ import { realpathSync } from "node:fs"
 let ZCodeAuthPlugin
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin } = await import("./zcode-core.mjs"))
 })
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))

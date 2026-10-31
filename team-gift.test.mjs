@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { realpathSync } from "node:fs"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with an isolated HOME")
-const { ZCodeAuthPlugin, _internal } = await import("./index.mjs")
+const { ZCodeAuthPlugin, _internal } = await import("./zcode-core.mjs")
 const jwt = ["{}", JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
 const state = { site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic", key: "team.secret", token: "team-token", org: "org", project: "project", jwt, device: "test-device", plan: "Team Max" }
 const auth = (s = state) => ({ type: "oauth", access: s.key, refresh: JSON.stringify(s), expires: 0 })

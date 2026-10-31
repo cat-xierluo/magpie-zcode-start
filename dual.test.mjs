@@ -12,7 +12,7 @@ import { realpathSync } from "node:fs"
 let ZCodeAuthPlugin, _internal
 async function setup() {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal } = await import("./zcode-core.mjs"))
 }
 await setup()
 

@@ -8,7 +8,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
-import { ZCodeAuthPlugin, _internal } from "./index.mjs"
+import { ZCodeAuthPlugin, _internal } from "./zcode-core.mjs"
 
 const { busy, spentUp, BUSY_WAITS, DEFAULT_CONCURRENCY } = _internal
 const WAITS = [...BUSY_WAITS]

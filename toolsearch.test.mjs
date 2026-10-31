@@ -16,7 +16,7 @@ const got = []
 let answer = null
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin } = await import("./zcode-core.mjs"))
   server = Bun.serve({
     port: 0,
     async fetch(req) {

@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { realpathSync } from "node:fs"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run in an isolated home")
-const { ZCodeAuthPlugin, _internal } = await import("./index.mjs")
+const { ZCodeAuthPlugin, _internal } = await import("./zcode-core.mjs")
 const now = Math.trunc(Date.now() / 1000)
 const jwt = ["{}", JSON.stringify({ exp: now + 3600 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".synthetic"
 const state = { site: "zai", base: "https://api.z.ai/api/anthropic", key: "synthetic-key", jwt, device: "11111111-2222-4333-8444-555555555555", plan: "GLM Coding Pro" }

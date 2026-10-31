@@ -1,6 +1,6 @@
 {
   "name": "magpie-zcode-start",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Unofficial Magpie provider plugin exposing ZCode Start Plan allowances as an independent zcode-start lane",
   "type": "module",
   "author": "Yang Weixin",
@@ -17,7 +17,7 @@
     "test": "node scripts/check.mjs",
     "check": "node scripts/check.mjs"
   },
-  "files": ["index.mjs", "prompt.mjs", "zcode-icon.png", "zcode-start-icon.png", "README.md"],
+  "files": ["index.mjs", "zcode-core.mjs", "magpie-signins.mjs", "prompt.mjs", "zcode-icon.png", "zcode-start-icon.png", "README.md", "NOTICE"],
   "keywords": ["magpie-plugin", "magpie", "opencode", "opencode-plugin", "zcode", "z.ai", "bigmodel", "glm", "coding-plan"],
   "magpie": {
     "maxConcurrency": 3

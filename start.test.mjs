@@ -19,7 +19,7 @@ const got = []
 let answer = null // what the fake answers instead, when set
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal } = await import("./zcode-core.mjs"))
   PROMPT = (await import("./prompt.mjs")).default
   server = Bun.serve({
     port: 0,
@@ -339,8 +339,8 @@ test("a Start Plan request says the agent's folder as magpie tells it, and no fo
   expect(r.headers["x-magpie-work-dir"]).toBeUndefined()
   expect(r.headers["x-magpie-work-git"]).toBeUndefined()
   got.length = 0
-  r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent("/Users/me/notes"), git: "no" } })
-  expect(JSON.parse(r.body).system[2].text).toContain("- Primary working directory: /Users/me/notes\n- Is a git repository: no\n- Platform: ")
+  r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent("/workspace/notes"), git: "no" } })
+  expect(JSON.parse(r.body).system[2].text).toContain("- Primary working directory: /workspace/notes\n- Is a git repository: no\n- Platform: ")
   got.length = 0
   // a folder whose repository magpie doesn't know: no git line
   r = await send(start("zai"), JSON.stringify(agentBody), { place: { dir: encodeURIComponent("/srv/x") } })

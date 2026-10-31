@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os"
 import { realpathSync } from "node:fs"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((p) => homedir().startsWith(p))) throw new Error("run in an isolated home")
-const { ZCodeAuthPlugin, ZCodeStartAuthPlugin, _internal } = await import("./index.mjs")
+const { ZCodeAuthPlugin, ZCodeStartAuthPlugin, _internal } = await import("./zcode-core.mjs")
 const now = Math.trunc(Date.now() / 1000)
 const token = ["{}", JSON.stringify({ exp: now + 86400 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".synthetic"
 const state = { site: "zai", jwt: token, device: "synthetic-device", key: "synthetic-key", plan: "GLM Coding Pro" }

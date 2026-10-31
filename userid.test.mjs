@@ -13,7 +13,7 @@ let server
 const got = []
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin } = await import("./zcode-core.mjs"))
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -69,7 +69,7 @@ const userIdOf = (b) => JSON.parse(JSON.parse(b).metadata.user_id)
 test("a coding plan's Messages request names the sign-in's device, as ZCode's does", async () => {
   const { body, path } = await send(signedIn, pi())
   expect(path).toBe("/open.bigmodel.cn/api/anthropic/v1/messages")
-  const { sessionOf } = require("./index.mjs")._internal
+  const { sessionOf } = require("./zcode-core.mjs")._internal
   // and the conversation, as x-session-id names it; Pi named none (#387)
   expect(userIdOf(body)).toEqual({ device_id: DEVICE, account_uuid: "", session_id: sessionOf("", DEVICE) })
   // the rest of the request is the agent's, as it sent it
@@ -86,7 +86,7 @@ test("every request of one account names the same device", async () => {
 })
 
 test("a pasted key's device is the same on every start, and its own", () => {
-  const { keyDevice, stateOf } = require("./index.mjs")._internal
+  const { keyDevice, stateOf } = require("./zcode-core.mjs")._internal
   expect(stateOf(pasted).device).toBe(keyDevice("id.pasted"))
   expect(stateOf(pasted).device).toBe(stateOf({ ...pasted }).device)
   expect(stateOf({ ...pasted, key: "id.other" }).device).not.toBe(stateOf(pasted).device)
@@ -96,7 +96,7 @@ test("a pasted key's device is the same on every start, and its own", () => {
 })
 
 test("a pasted key's request names its device too", async () => {
-  const { keyDevice } = require("./index.mjs")._internal
+  const { keyDevice } = require("./zcode-core.mjs")._internal
   const { body } = await send(pasted, pi())
   expect(userIdOf(body).device_id).toBe(keyDevice("id.pasted"))
 })

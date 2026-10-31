@@ -14,7 +14,7 @@ let _internal
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
   process.env.ZCODE_CREDENTIAL_SECRET = "test-seed"
-  ;({ _internal } = await import("./index.mjs"))
+  ;({ _internal } = await import("./zcode-core.mjs"))
 })
 
 function enc(text) {

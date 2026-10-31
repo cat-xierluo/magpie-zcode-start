@@ -1,0 +1,11 @@
+magpie-zcode-start
+
+This independently maintained Magpie plugin contains code derived from the
+ZCode package in https://github.com/magpie-community/plugins (packages/zcode).
+That code is copyright (c) 2026 magpie-community contributors and licensed
+under the MIT License. See LICENSE for the retained permission notice.
+
+The inherited package-level Git history records the original contributors.
+The independent package entry registers only zcode-start. Compatibility code
+is retained in zcode-core.mjs; it is not a runtime dependency on the official
+ZCode plugin package.

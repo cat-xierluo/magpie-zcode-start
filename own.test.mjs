@@ -12,7 +12,7 @@ let ZCodeAuthPlugin, _internal
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
   process.env.ZCODE_CREDENTIAL_SECRET = "test-seed"
-  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal } = await import("./zcode-core.mjs"))
 })
 
 const dir = () => join(homedir(), ".zcode", "v2")

@@ -10,7 +10,7 @@ import { homedir, tmpdir } from "node:os"
 import { realpathSync } from "node:fs"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-const { ZCodeAuthPlugin, _internal } = await import("./index.mjs")
+const { ZCodeAuthPlugin, _internal } = await import("./zcode-core.mjs")
 
 const jwt = ["{}", JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
 const DEVICE = "11111111-2222-4333-8444-555555555555"
