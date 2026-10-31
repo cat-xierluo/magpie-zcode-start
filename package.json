@@ -1,18 +1,24 @@
 {
-  "name": "@magpie-community/opencode-zcode-auth",
-  "version": "0.1.39-start-lane.1",
-  "description": "OpenCode provider plugin: signs in to Z.ai's or BigModel's (智谱) GLM Coding Plan as ZCode does, including team seats, ZCode's Start Plan, a separate Start Plan lane and daily gift-plan claims",
+  "name": "magpie-zcode-start",
+  "version": "0.2.0",
+  "description": "Unofficial Magpie provider plugin exposing ZCode Start Plan allowances as an independent zcode-start lane",
   "type": "module",
-  "main": "./index.mjs",
-  "exports": "./index.mjs",
-  "files": ["index.mjs", "prompt.mjs", "zcode-icon.png", "zcode-start-icon.png", "README.md"],
-  "keywords": ["opencode", "opencode-plugin", "magpie", "zcode", "z.ai", "bigmodel", "glm", "coding-plan"],
+  "author": "Yang Weixin",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/magpie-community/plugins.git",
-    "directory": "packages/zcode"
+    "url": "git+https://github.com/cat-xierluo/magpie-zcode-start.git"
   },
+  "bugs": "https://github.com/cat-xierluo/magpie-zcode-start/issues",
+  "homepage": "https://github.com/cat-xierluo/magpie-zcode-start#readme",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "scripts": {
+    "test": "node scripts/check.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "files": ["index.mjs", "prompt.mjs", "zcode-icon.png", "zcode-start-icon.png", "README.md"],
+  "keywords": ["magpie-plugin", "magpie", "opencode", "opencode-plugin", "zcode", "z.ai", "bigmodel", "glm", "coding-plan"],
   "magpie": {
     "maxConcurrency": 3
   }

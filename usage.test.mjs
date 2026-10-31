@@ -3,7 +3,7 @@
 // zcode_start_test.go TestZCodeStartPlanOwnAccount, zcode_team_test.go).
 import { test, expect, afterAll, beforeAll, beforeEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { realpathSync } from "node:fs"
+import { readFileSync, realpathSync } from "node:fs"
 
 let ZCodeAuthPlugin, _internal
 beforeAll(async () => {
@@ -411,6 +411,22 @@ test("a gift plan ZCode holds but has not granted is named on the card, to claim
   expect(calls.some((c) => c.url.pathname.endsWith("/claim"))).toBe(false)
 })
 
+// #503, 10-30: a banner plan is in the app's marketing feed and in no
+// preview; the card names it too, and still claims nothing
+test("a banner plan from the app's marketing feed is named on the card", async () => {
+  const now = Math.trunc(Date.now() / 1000)
+  const token = jwt(now + 86400)
+  const calls = serve(({ url }) => {
+    if (url.pathname === "/api/v1/zcode-plan/billing/balance") return ok(startBalance(now, "active"))
+    if (url.pathname === "/api/v1/zcode-plan/billing/preview") return ok(PREVIEW_CLAIMED)
+    if (url.pathname === "/api/v1/marketing/touch")
+      return ok({ deliveries: [{ banner: { background: { args: { zcode_plan: { name: "ZCODE WEEKEND BUILD" } } }, buttons: [{ action: { type: "claim_zcode_plan", args: { plan_id: "zcode-v3-start-plan-1030-wk" } } }] } }] })
+  })
+  const u = await usage(oauth({ site: "zai", jwt: token, device: "11111111-2222-4333-8444-555555555555" }))
+  expect(u.windows.at(-1)).toEqual({ name: "Gift plans to claim in the ZCode app", used: 0, aside: true, display: "1 · ZCODE WEEKEND BUILD" })
+  expect(calls.some((c) => c.url.pathname.endsWith("/claim"))).toBe(false)
+})
+
 test("a claimed account's card has no line at all", async () => {
   const now = Math.trunc(Date.now() / 1000)
   const { u } = await startCard(now, jwt(now + 86400), () => ok(PREVIEW_CLAIMED))
@@ -473,4 +489,20 @@ test("a coding account's line goes after its coding and gift windows", async () 
   expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "GLM-5.1-Trial · Start Plan", "Gift plans to claim in the ZCode app"])
   expect(u.windows.at(-1)).toEqual(TRUST_BUILD)
   expect(calls.filter((c) => c.url.pathname.endsWith("/preview"))).toHaveLength(1)
+})
+
+// #503: the same card line from the real marketing/touch reply
+// (testdata/touch-1030-wk.json; see checkin.test.mjs for how it was cut)
+test("the real banner feed names its plan once on the card", async () => {
+  const now = Math.trunc(Date.now() / 1000)
+  const token = jwt(now + 86400)
+  const real = readFileSync(new URL("./testdata/touch-1030-wk.json", import.meta.url), "utf8")
+  const calls = serve(({ url }) => {
+    if (url.pathname === "/api/v1/zcode-plan/billing/balance") return ok(startBalance(now, "active"))
+    if (url.pathname === "/api/v1/zcode-plan/billing/preview") return ok(PREVIEW_CLAIMED)
+    if (url.pathname === "/api/v1/marketing/touch") return new Response(real)
+  })
+  const u = await usage(oauth({ site: "zai", jwt: token, device: "11111111-2222-4333-8444-555555555555" }))
+  expect(u.windows.at(-1)).toEqual({ name: "Gift plans to claim in the ZCode app", used: 0, aside: true, display: "1 · ZCODE WEEKEND BUILD" })
+  expect(calls.some((c) => c.url.pathname.endsWith("/claim"))).toBe(false)
 })

@@ -694,7 +694,8 @@ async function giftOf(s) {
 const CLAIM_HINT = "Gift plans to claim in the ZCode app"
 
 // claimHint is the card's line for gift plans ZCode is holding for the
-// account but has not put on it: GET /billing/preview lists them. The
+// account but has not put on it: the app's banners (marketing/touch) and
+// GET /billing/preview list them (toClaim). The
 // card only names them: they are claimed in the ZCode app, or by the
 // daily claim (claimDaily) when the user turned it on; on 10-06 a claim
 // without the app's Aliyun captcha attestation was refused (3007). A window, set aside (it is no
@@ -707,16 +708,10 @@ const CLAIM_HINT = "Gift plans to claim in the ZCode app"
 // own.
 async function claimHint(s) {
   if (!s.jwt || jwtExpired(s.jwt)) return null
-  let d
-  try {
-    d = await call("GET", `${ZCODE}/api/v1/zcode-plan/billing/preview?app_version=${APP_VERSION}&platform=${platform()}`, { auth: "Bearer " + s.jwt, device: s.device })
-  } catch {
-    return null
-  }
-  const plans = (previewPlans(d) ?? []).filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim())
+  const { plans } = await toClaim(s)
   if (!plans.length) return null
   const n = plans.length
-  const plan = first(...plans.map((p) => (typeof p?.name === "string" ? p.name : "")), "ZCode gift plan")
+  const plan = first(...plans.map((p) => p.name), "ZCode gift plan")
   return { name: CLAIM_HINT, used: 0, aside: true, display: `${n} · ${plan}` }
 }
 
@@ -741,8 +736,8 @@ const zcodeHeaders = () => ({ "X-ZCode-App-Version": APP_VERSION, "X-Platform": 
 // "claimed" (code 0), "done" (code 1003, claimed before), "captcha" (the
 // claim wants the app's captcha), else "failed" with why. Only a body
 // that reads decides: an HTTP error without one, or text that isn't
-// JSON, is failed (unknown), never claimed. The code 0 body hasn't been
-// seen yet, so nothing but its code is read.
+// JSON, is failed (unknown), never claimed. Only the code is read (#503
+// has a real code 0 reply, "Plan claimed successfully.").
 async function claimOne(s, planID) {
   let res, text
   try {
@@ -782,41 +777,109 @@ function previewPlans(d) {
   return Array.isArray(d.plans) ? d.plans : null
 }
 
-// claimDaily claims every gift plan ZCode's preview lists for the account
-// (#503), as auth.checkin's answer: inactive when it lists none, claimed
-// when one was claimed now, done when each was claimed before, captcha
-// when ZCode wants the app's captcha for one (it is claimed in the ZCode
-// app), failed when the list or a claim can't be read. A failed one is
-// asked again later in the day, when a plan claimed now answers 1003.
+// TOUCH is ZCode's marketing feed: the ZCode app's claim banners come
+// from it, not from /billing/preview. A banner plan ("ZCODE WEEKEND
+// BUILD", 10-30) is in neither /billing/preview nor /billing/current
+// while the app shows its banner, and the app claims it through the same
+// /billing/claim (#503's capture of 10-30, kongbai01203: GET
+// /api/v1/marketing/touch?seq=<n, counting up from 0> with the session,
+// X-Device-Mid, X-Client-Language and X-ZCode-App-Version, answered
+// data.deliveries[].banner.buttons[].action = {"type":"claim_zcode_plan",
+// "args":{"plan_id":…}} and the plan's name in
+// banner.background.args.zcode_plan.name).
+const TOUCH = "/api/v1/marketing/touch"
+const CLAIM_ACTION = "claim_zcode_plan"
+let touchSeq = 0
+const clientLanguage = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || "en-US"
+  } catch {
+    return "en-US"
+  }
+}
+
+// touchPlans is the plans marketing/touch's deliveries offer to claim:
+// [{plan_id, name}], [] for a feed with no deliveries, null for one that
+// doesn't read. Each delivery is searched for its claim_zcode_plan
+// actions and its zcode_plan's name, wherever the banner keeps them, so
+// a button moved inside the banner is still found.
+function touchPlans(d) {
+  if (d == null) return []
+  if (typeof d !== "object" || Array.isArray(d)) return null
+  if (d.deliveries == null) return []
+  if (!Array.isArray(d.deliveries)) return null
+  const out = []
+  for (const dv of d.deliveries) {
+    const ids = [], names = []
+    const walk = (v, depth) => {
+      if (!v || typeof v !== "object" || depth > 12) return
+      if (Array.isArray(v)) return v.forEach((x) => walk(x, depth + 1))
+      if (v.type === CLAIM_ACTION && typeof v.args?.plan_id === "string" && v.args.plan_id.trim()) ids.push(v.args.plan_id.trim())
+      if (v.zcode_plan && typeof v.zcode_plan === "object" && typeof v.zcode_plan.name === "string") names.push(v.zcode_plan.name)
+      for (const k of Object.keys(v)) walk(v[k], depth + 1)
+    }
+    walk(dv, 0)
+    for (const id of ids) out.push({ plan_id: id, name: first(names[0] ?? "", id) })
+  }
+  return out
+}
+
+// toClaim is every gift plan the account can claim: what the app's
+// marketing feed offers (its banners) and what /billing/preview lists,
+// once each by plan_id. unread names a list that didn't read: its
+// plans are unknown, never none.
+async function toClaim(s) {
+  const plans = [], unread = []
+  const add = (p) => {
+    if (!plans.some((q) => q.plan_id === p.plan_id)) plans.push(p)
+  }
+  const ask = async (what, url, headers, read) => {
+    let d
+    try {
+      d = await call("GET", url, { auth: "Bearer " + s.jwt, device: s.device, headers })
+    } catch (e) {
+      return unread.push(`${what}: ${e?.message ?? String(e)}`)
+    }
+    const got = read(d)
+    if (!got) return unread.push(`${what}: the plan list doesn't read`)
+    got.forEach(add)
+  }
+  await ask("gift plans to claim", `${ZCODE}${TOUCH}?seq=${touchSeq++}`, { "X-ZCode-App-Version": APP_VERSION, "X-Client-Language": clientLanguage() }, touchPlans)
+  await ask("gift plans to claim", `${ZCODE}/api/v1/zcode-plan/billing/preview?app_version=${APP_VERSION}&platform=${platform()}`, zcodeHeaders(), (d) => {
+    const l = previewPlans(d)
+    return l && l.filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim()).map((p) => ({ plan_id: p.plan_id.trim(), name: first(typeof p.name === "string" ? p.name : "", p.plan_id.trim()) }))
+  })
+  return { plans, unread }
+}
+
+// claimDaily claims every gift plan ZCode offers the account (#503:
+// toClaim, the app's banners and its preview), as auth.checkin's answer:
+// inactive when neither lists one, claimed when one was claimed now,
+// done when each was claimed before, captcha when ZCode wants the app's
+// captcha for one (it is claimed in the ZCode app), failed when a list
+// or a claim can't be read. A failed one is asked again later in the
+// day, when a plan claimed now answers 1003.
 // Nothing here marks the account: a failed claim keeps its sign-in.
 async function claimDaily(s) {
   if (!s?.jwt) return { outcome: "ineligible", message: "ZCode's gift plans are claimed with a ZCode sign-in; this account has none" }
   if (jwtExpired(s.jwt)) return { outcome: "failed", message: EXPIRED }
-  let d
-  try {
-    d = await call("GET", `${ZCODE}/api/v1/zcode-plan/billing/preview?app_version=${APP_VERSION}&platform=${platform()}`, { auth: "Bearer " + s.jwt, device: s.device, headers: zcodeHeaders() })
-  } catch (e) {
-    return { outcome: "failed", message: `gift plans to claim: ${e?.message ?? String(e)}` }
-  }
-  const listed = previewPlans(d)
-  if (!listed) return { outcome: "failed", message: "gift plans to claim: the plan list doesn't read" }
-  const plans = listed.filter((p) => typeof p?.plan_id === "string" && p.plan_id.trim())
+  const { plans, unread } = await toClaim(s)
+  if (!plans.length && unread.length) return { outcome: "failed", message: unread.join("; ") }
   if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim" }
   const got = []
-  for (const p of plans) {
-    const name = first(typeof p.name === "string" ? p.name : "", p.plan_id)
-    got.push({ name, ...(await claimOne(s, p.plan_id.trim())) })
-  }
+  for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
   const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
   const claimed = named("claimed")
   const said = [
     claimed.length ? `claimed ${claimed.join(", ")}` : "",
     ...got.filter((g) => g.outcome === "captcha").map((g) => `${g.name}: claim it in the ZCode app (${g.why})`),
     ...got.filter((g) => g.outcome === "failed").map((g) => `${g.name}: ${g.why}`),
+    ...unread,
   ].filter(Boolean).join("; ")
   // a plan claimed now is used by the next request, not ten minutes on
   if (claimed.length) routes.delete(s.key + "\0" + s.jwt)
-  if (got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
+  // a list that didn't read may hold a plan not claimed: asked again
+  if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }
   if (claimed.length) return { outcome: "claimed", message: said }
   return { outcome: "done", message: `already claimed: ${named("done").join(", ")}` }
